@@ -1,0 +1,56 @@
+[build-system]
+requires = ["hatchling>=1.25"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mivia-aid-dataset"
+version = "0.1.0"
+description = "AID2026 incident onset detection training and submission scaffold"
+readme = "README.md"
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "torch>=2.9.1",
+    "torchvision>=0.24.1",
+    "transformers>=4.41",
+    "numpy>=1.26",
+    "scipy>=1.13",
+    "pandas>=2.2",
+    "opencv-python-headless>=4.10",
+]
+
+[project.scripts]
+aid-stage1 = "src.train_stage1:main"
+aid-stage2 = "src.train_stage2:main"
+aid-eval = "src.eval:main"
+aid-export-submission = "scripts.export_submission:main"
+
+[dependency-groups]
+dev = [
+    "ipykernel>=6.29",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src"]
+
+[tool.uv]
+default-groups = ["dev"]
+
+[tool.uv.sources]
+torch = [
+    { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+]
+torchvision = [
+    { index = "pytorch-cpu", marker = "sys_platform != 'linux'" },
+    { index = "pytorch-cu128", marker = "sys_platform == 'linux'" },
+]
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true

@@ -1,0 +1,36 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Virtual environments
+.venv
+
+# uv
+.uv/
+
+# Local agent/tooling files
+.claude/
+.mcp.json
+
+# Training outputs
+artifacts/
+submission/weights/
+
+# Local data and archives
+train-002/
+val/
+*.zip
+test_example-*.zip
+MIVIA-AID-Dataset/*
+!MIVIA-AID-Dataset/readme.txt
+!MIVIA-AID-Dataset/Val_GT.csv
+
+# Notebook checkpoints
+.ipynb_checkpoints/
