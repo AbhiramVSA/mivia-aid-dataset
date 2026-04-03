@@ -131,6 +131,22 @@ def decode_sampled_frame_window(
         current_source_idx += 1
     capture.release()
 
+    if len(frames) == len(target_source_indices):
+        return torch.stack(frames, dim=0), probe.fps
+
+    # OpenCV can under-read by one or two frames near EOF on some codecs even
+    # when metadata advertises those frames. For shortfalls near the tail,
+    # duplicate the last decoded frame instead of aborting the entire epoch.
+    if frames and len(frames) < len(target_source_indices):
+        shortfall = len(target_source_indices) - len(frames)
+        if shortfall <= 2:
+            pad_frame = frames[-1].clone()
+            frames.extend([pad_frame.clone() for _ in range(shortfall)])
+            return torch.stack(frames, dim=0), probe.fps
+
+    if not frames:
+        raise RuntimeError(f"No frames decoded from window in {video_path}")
+
     if len(frames) != len(target_source_indices):
         raise RuntimeError(
             f"Decoded {len(frames)} sampled frames but expected {len(target_source_indices)} from {video_path}"

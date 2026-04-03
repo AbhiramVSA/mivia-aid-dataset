@@ -28,6 +28,17 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
+def print_device_diagnostics() -> None:
+    print(f"torch_version={torch.__version__}")
+    print(f"cuda_available={torch.cuda.is_available()}")
+    print(f"cuda_version={torch.version.cuda}")
+    if torch.cuda.is_available():
+        print(f"gpu_count={torch.cuda.device_count()}")
+        print(f"gpu_name={torch.cuda.get_device_name(0)}")
+    else:
+        print("gpu_name=None")
+
+
 def build_split(
     *,
     csv_path: Path,
@@ -241,6 +252,7 @@ def validate(
 def main() -> None:
     args = parse_args()
     config = ExperimentConfig().resolved()
+    print_device_diagnostics()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_loader, val_loader = make_dataloaders(config, args)
 
