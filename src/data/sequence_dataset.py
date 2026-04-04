@@ -62,6 +62,8 @@ class Stage2SequenceDataset(Dataset[SequenceSample]):
         self.max_steps = max_steps
         self.window_stride = window_stride or max_steps
         self.records = self._build_window_records()
+        self.total_window_steps = sum(record.step_end - record.step_start for record in self.records)
+        self.max_window_steps = max((record.step_end - record.step_start for record in self.records), default=0)
 
     def _build_window_records(self) -> list[SequenceWindowRecord]:
         records: list[SequenceWindowRecord] = []
@@ -86,6 +88,16 @@ class Stage2SequenceDataset(Dataset[SequenceSample]):
 
     def __len__(self) -> int:
         return len(self.records)
+
+    @property
+    def num_videos(self) -> int:
+        return len(self.annotations)
+
+    @property
+    def avg_window_steps(self) -> float:
+        if not self.records:
+            return 0.0
+        return self.total_window_steps / float(len(self.records))
 
     def __getitem__(self, index: int) -> SequenceSample:
         record = self.records[index]
