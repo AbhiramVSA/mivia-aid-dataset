@@ -55,8 +55,8 @@ class Stage1TrainConfig:
     num_workers: int = 4
     grad_accum_steps: int = 1
     amp: bool = True
-    max_steps_per_sample: int = 48
-    window_stride_steps: int = 24
+    max_steps_per_sample: int = 8
+    window_stride_steps: int = 4
 
 
 @dataclass(slots=True)
@@ -71,8 +71,8 @@ class Stage2TrainConfig:
     grad_accum_steps: int = 1
     amp: bool = True
     lambda_video_values: tuple[float, ...] = (0.25, 0.5, 1.0)
-    max_steps_per_sample: int = 128
-    window_stride_steps: int = 64
+    max_steps_per_sample: int = 16
+    window_stride_steps: int = 8
 
 
 @dataclass(slots=True)

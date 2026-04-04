@@ -23,6 +23,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-name", type=str, default="stage1_best.pt")
     parser.add_argument("--max-train-videos", type=int, default=None)
     parser.add_argument("--max-val-videos", type=int, default=None)
+    parser.add_argument("--batch-size", type=int, default=None)
+    parser.add_argument("--max-steps", type=int, default=None)
+    parser.add_argument("--window-stride", type=int, default=None)
     return parser.parse_args()
 
 
@@ -234,6 +237,12 @@ def validate(
 def main() -> None:
     args = parse_args()
     config = ExperimentConfig().resolved()
+    if args.batch_size is not None:
+        config.stage1.batch_size = args.batch_size
+    if args.max_steps is not None:
+        config.stage1.max_steps_per_sample = args.max_steps
+    if args.window_stride is not None:
+        config.stage1.window_stride_steps = args.window_stride
     print_device_diagnostics()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_loader, val_loader = make_dataloaders(config, args)
