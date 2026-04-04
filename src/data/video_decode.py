@@ -97,6 +97,34 @@ def decode_sampled_frame_window(
     start_sample_idx: int = 0,
     end_sample_idx: int | None = None,
 ) -> tuple[torch.Tensor, float]:
+    def _decode_target_indices(target_source_indices: list[int], use_seek: bool) -> list[torch.Tensor]:
+        capture = cv2.VideoCapture(str(video_path))
+        if not capture.isOpened():
+            raise RuntimeError(f"Failed to open video: {video_path}")
+        try:
+            if use_seek:
+                capture.set(cv2.CAP_PROP_POS_FRAMES, target_source_indices[0])
+                current_source_idx = target_source_indices[0]
+            else:
+                current_source_idx = 0
+
+            frames_local: list[torch.Tensor] = []
+            current_target_ptr = 0
+            final_source_idx = target_source_indices[-1]
+
+            while current_source_idx <= final_source_idx and current_target_ptr < len(target_source_indices):
+                success, frame = capture.read()
+                if not success:
+                    break
+                if current_source_idx == target_source_indices[current_target_ptr]:
+                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    frames_local.append(torch.from_numpy(rgb).permute(2, 0, 1).contiguous())
+                    current_target_ptr += 1
+                current_source_idx += 1
+            return frames_local
+        finally:
+            capture.release()
+
     cv2 = _require_cv2()
     probe = probe_video(video_path)
     sampled_source_indices = _resampled_source_indices(probe.frame_count, probe.fps, sample_fps)
@@ -110,39 +138,23 @@ def decode_sampled_frame_window(
         )
 
     target_source_indices = sampled_source_indices[start_sample_idx:end_sample_idx]
-    capture = cv2.VideoCapture(str(video_path))
-    if not capture.isOpened():
-        raise RuntimeError(f"Failed to open video: {video_path}")
-    capture.set(cv2.CAP_PROP_POS_FRAMES, target_source_indices[0])
-
-    frames: list[torch.Tensor] = []
-    current_target_ptr = 0
-    current_source_idx = target_source_indices[0]
-    final_source_idx = target_source_indices[-1]
-
-    while current_source_idx <= final_source_idx and current_target_ptr < len(target_source_indices):
-        success, frame = capture.read()
-        if not success:
-            break
-        if current_source_idx == target_source_indices[current_target_ptr]:
-            rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            frames.append(torch.from_numpy(rgb).permute(2, 0, 1).contiguous())
-            current_target_ptr += 1
-        current_source_idx += 1
-    capture.release()
+    frames = _decode_target_indices(target_source_indices, use_seek=True)
 
     if len(frames) == len(target_source_indices):
         return torch.stack(frames, dim=0), probe.fps
 
-    # OpenCV can under-read by one or two frames near EOF on some codecs even
-    # when metadata advertises those frames. For shortfalls near the tail,
-    # duplicate the last decoded frame instead of aborting the entire epoch.
+    # Some codecs report slightly optimistic metadata or land imprecisely after
+    # random seeking. Retry with a deterministic scan from the start before
+    # falling back to tail padding.
+    fallback_frames = _decode_target_indices(target_source_indices, use_seek=False)
+    if len(fallback_frames) > len(frames):
+        frames = fallback_frames
+
     if frames and len(frames) < len(target_source_indices):
         shortfall = len(target_source_indices) - len(frames)
-        if shortfall <= 2:
-            pad_frame = frames[-1].clone()
-            frames.extend([pad_frame.clone() for _ in range(shortfall)])
-            return torch.stack(frames, dim=0), probe.fps
+        pad_frame = frames[-1].clone()
+        frames.extend([pad_frame.clone() for _ in range(shortfall)])
+        return torch.stack(frames, dim=0), probe.fps
 
     if not frames:
         raise RuntimeError(f"No frames decoded from window in {video_path}")
