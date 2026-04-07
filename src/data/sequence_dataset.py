@@ -22,6 +22,7 @@ class SequenceSample:
     clip_tensor: torch.Tensor
     timestamps_s: torch.Tensor
     step_targets: torch.Tensor
+    onset_targets: torch.Tensor
     step_mask: torch.Tensor
     video_target: torch.Tensor
     source_positive: torch.Tensor
@@ -33,6 +34,7 @@ class SequenceBatch:
     clip_tensor: torch.Tensor
     timestamps_s: torch.Tensor
     step_targets: torch.Tensor
+    onset_targets: torch.Tensor
     step_mask: torch.Tensor
     video_target: torch.Tensor
     source_positive: torch.Tensor
@@ -55,12 +57,14 @@ class Stage2SequenceDataset(Dataset[SequenceSample]):
         backbone_name: str,
         max_steps: int | None = None,
         window_stride: int | None = None,
+        onset_sigma_s: float | None = None,
     ) -> None:
         self.annotations = annotations
         self.sampling = sampling
         self.backbone_name = backbone_name
         self.max_steps = max_steps
         self.window_stride = window_stride or max_steps
+        self.onset_sigma_s = onset_sigma_s
         self.records = self._build_window_records()
         self.total_window_steps = sum(record.step_end - record.step_start for record in self.records)
         self.max_window_steps = max((record.step_end - record.step_start for record in self.records), default=0)
@@ -133,9 +137,15 @@ class Stage2SequenceDataset(Dataset[SequenceSample]):
         )
         if annotation.is_positive and annotation.start_s is not None:
             step_targets = (timestamps_s >= float(annotation.start_s)).to(dtype=torch.float32)
+            if self.onset_sigma_s is not None and self.onset_sigma_s > 0:
+                distance = timestamps_s - float(annotation.start_s)
+                onset_targets = torch.exp(-0.5 * (distance / float(self.onset_sigma_s)) ** 2)
+            else:
+                onset_targets = step_targets.clone()
             video_target = torch.tensor(float(step_targets.max().item() > 0.0), dtype=torch.float32)
         else:
             step_targets = torch.zeros_like(timestamps_s)
+            onset_targets = torch.zeros_like(timestamps_s)
             video_target = torch.tensor(0.0, dtype=torch.float32)
         step_mask = torch.ones_like(timestamps_s, dtype=torch.bool)
         return SequenceSample(
@@ -143,6 +153,7 @@ class Stage2SequenceDataset(Dataset[SequenceSample]):
             clip_tensor=clip_tensor,
             timestamps_s=timestamps_s,
             step_targets=step_targets,
+            onset_targets=onset_targets,
             step_mask=step_mask,
             video_target=video_target,
             source_positive=torch.tensor(float(annotation.is_positive), dtype=torch.float32),
@@ -162,6 +173,7 @@ def collate_sequence_batch(samples: list[SequenceSample]) -> SequenceBatch:
     )
     timestamps_s = torch.zeros((batch_size, max_steps), dtype=torch.float32)
     step_targets = torch.zeros((batch_size, max_steps), dtype=torch.float32)
+    onset_targets = torch.zeros((batch_size, max_steps), dtype=torch.float32)
     step_mask = torch.zeros((batch_size, max_steps), dtype=torch.bool)
     video_target = torch.stack([sample.video_target for sample in samples], dim=0)
     source_positive = torch.stack([sample.source_positive for sample in samples], dim=0)
@@ -172,6 +184,7 @@ def collate_sequence_batch(samples: list[SequenceSample]) -> SequenceBatch:
         clip_tensor[batch_index, :num_steps] = sample.clip_tensor
         timestamps_s[batch_index, :num_steps] = sample.timestamps_s
         step_targets[batch_index, :num_steps] = sample.step_targets
+        onset_targets[batch_index, :num_steps] = sample.onset_targets
         step_mask[batch_index, :num_steps] = sample.step_mask
         video_ids.append(sample.video_id)
 
@@ -180,6 +193,7 @@ def collate_sequence_batch(samples: list[SequenceSample]) -> SequenceBatch:
         clip_tensor=clip_tensor,
         timestamps_s=timestamps_s,
         step_targets=step_targets,
+        onset_targets=onset_targets,
         step_mask=step_mask,
         video_target=video_target,
         source_positive=source_positive,

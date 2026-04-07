@@ -41,10 +41,22 @@ def _load_bundle(checkpoint_path: str) -> tuple[AIDTemporalModel, torch.device, 
         _config_value(config_dict, "model", "temporal_channels", default=config.model.temporal_channels)
     )
     dropout = _config_value(config_dict, "model", "dropout", default=config.model.dropout)
+    transformer_layers = _config_value(
+        config_dict, "model", "transformer_layers", default=config.model.transformer_layers
+    )
+    transformer_heads = _config_value(
+        config_dict, "model", "transformer_heads", default=config.model.transformer_heads
+    )
+    transformer_ffn_dim = _config_value(
+        config_dict, "model", "transformer_ffn_dim", default=config.model.transformer_ffn_dim
+    )
     config.model.backbone_name = backbone_name
     config.model.hidden_size = hidden_size
     config.model.temporal_channels = temporal_channels
     config.model.dropout = dropout
+    config.model.transformer_layers = transformer_layers
+    config.model.transformer_heads = transformer_heads
+    config.model.transformer_ffn_dim = transformer_ffn_dim
     config.video.sample_fps = _config_value(config_dict, "video", "sample_fps", default=config.video.sample_fps)
     config.video.clip_num_frames = _config_value(
         config_dict, "video", "clip_num_frames", default=config.video.clip_num_frames
@@ -70,11 +82,17 @@ def _load_bundle(checkpoint_path: str) -> tuple[AIDTemporalModel, torch.device, 
         "default_min_consecutive_steps",
         default=config.postprocess.default_min_consecutive_steps,
     )
+    config.postprocess.prediction_mode = _config_value(
+        config_dict, "postprocess", "prediction_mode", default=config.postprocess.prediction_mode
+    )
     model = AIDTemporalModel(
         backbone_name=backbone_name,
         hidden_size=hidden_size,
         temporal_channels=temporal_channels,
         dropout=dropout,
+        transformer_layers=transformer_layers,
+        transformer_heads=transformer_heads,
+        transformer_ffn_dim=transformer_ffn_dim,
     )
     model.load_state_dict(payload["model_state_dict"], strict=False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -145,5 +163,6 @@ def infer_single_video(video_path: Path, checkpoint_path: Path | None = None) ->
         min_consecutive_steps=int(
             extra.get("min_consecutive_steps", config.postprocess.default_min_consecutive_steps)
         ),
+        mode=str(extra.get("prediction_mode", config.postprocess.prediction_mode)),
     )
     return result.predicted_start_s

@@ -34,6 +34,7 @@ def predict_start_time(
     video_score: float | None = None,
     median_kernel_size: int = 3,
     min_consecutive_steps: int = 1,
+    mode: str = "cumulative",
 ) -> PostprocessResult:
     if len(step_scores) != len(timestamps_s):
         raise ValueError("step_scores and timestamps_s must have the same length")
@@ -45,6 +46,16 @@ def predict_start_time(
     max_score = max(smoothed_scores)
     if effective_video_score < tau_video or max_score < tau_empty:
         return PostprocessResult(predicted_start_s=None, max_score=max_score, video_score=effective_video_score)
+
+    if mode == "peak":
+        if max_score < tau_start:
+            return PostprocessResult(predicted_start_s=None, max_score=max_score, video_score=effective_video_score)
+        peak_index = max(range(len(smoothed_scores)), key=lambda idx: smoothed_scores[idx])
+        return PostprocessResult(
+            predicted_start_s=timestamps_s[peak_index],
+            max_score=max_score,
+            video_score=effective_video_score,
+        )
 
     active_count = 0
     for index, (score, timestamp) in enumerate(zip(smoothed_scores, timestamps_s)):

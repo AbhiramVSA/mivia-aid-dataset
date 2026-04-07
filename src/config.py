@@ -73,6 +73,7 @@ class Stage2TrainConfig:
     lambda_video_values: tuple[float, ...] = (0.25, 0.5, 1.0)
     max_steps_per_sample: int = 16
     window_stride_steps: int = 8
+    onset_sigma_seconds: float = 1.0
 
 
 @dataclass(slots=True)
@@ -86,6 +87,7 @@ class PostprocessConfig:
     default_tau_start: float = 0.5
     default_tau_video: float = 0.0
     default_min_consecutive_steps: int = 1
+    prediction_mode: str = "peak"
 
 
 @dataclass(slots=True)
@@ -94,6 +96,9 @@ class ModelConfig:
     hidden_size: int = 768
     temporal_channels: tuple[int, int, int] = (512, 512, 256)
     dropout: float = 0.1
+    transformer_layers: int = 2
+    transformer_heads: int = 8
+    transformer_ffn_dim: int = 2048
 
 
 @dataclass(slots=True)
