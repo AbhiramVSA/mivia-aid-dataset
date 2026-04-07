@@ -21,6 +21,7 @@ from src.utils.postprocess import predict_start_time
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Stage 2 temporal fine-tuning")
+    parser.add_argument("--run-name", type=str, default="stage2")
     parser.add_argument("--output-name", type=str, default="stage2_best.pt")
     parser.add_argument("--init-checkpoint", type=Path, default=None)
     parser.add_argument("--lambda-video", type=float, default=0.5)
@@ -45,6 +46,10 @@ def print_device_diagnostics() -> None:
         print(f"gpu_name={torch.cuda.get_device_name(0)}")
     else:
         print("gpu_name=None")
+
+
+def log_prefix(run_name: str) -> str:
+    return f"[{run_name}]"
 
 
 def format_duration(seconds: float) -> str:
@@ -268,6 +273,7 @@ def train_one_epoch(
     epoch: int,
     total_epochs: int,
     log_every: int,
+    run_name: str,
 ) -> float:
     model.train()
     running_loss = 0.0
@@ -310,6 +316,7 @@ def train_one_epoch(
             print(
                 " ".join(
                     [
+                        log_prefix(run_name),
                         "phase=train",
                         f"epoch={epoch}/{total_epochs}",
                         f"batch={batch_index}/{len(loader)}",
@@ -338,6 +345,7 @@ def validate(
     epoch: int,
     total_epochs: int,
     log_every: int,
+    run_name: str,
 ) -> dict[str, float]:
     model.eval()
     per_video_scores: dict[str, list[tuple[float, float]]] = defaultdict(list)
@@ -383,6 +391,7 @@ def validate(
             print(
                 " ".join(
                     [
+                        log_prefix(run_name),
                         "phase=val",
                         f"epoch={epoch}/{total_epochs}",
                         f"batch={batch_index}/{len(loader)}",
@@ -430,8 +439,24 @@ def main() -> None:
     print_device_diagnostics()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_dataset, train_loader, val_dataset, val_loader = make_dataloaders(config, args)
+    print(
+        " ".join(
+            [
+                log_prefix(args.run_name),
+                f"lambda_video={args.lambda_video}",
+                f"batch_size={config.stage2.batch_size}",
+                f"max_steps={config.stage2.max_steps_per_sample}",
+                f"window_stride={config.stage2.window_stride_steps}",
+                f"num_workers={config.stage2.num_workers}",
+                f"num_epochs={config.stage2.num_epochs}",
+                f"init_checkpoint={'none' if args.init_checkpoint is None else args.init_checkpoint.name}",
+            ]
+        )
+    )
+    print(log_prefix(args.run_name), end=" ")
     print_dataset_summary("train", train_dataset, train_loader)
     if val_dataset is not None and val_loader is not None:
+        print(log_prefix(args.run_name), end=" ")
         print_dataset_summary("val", val_dataset, val_loader)
 
     model = AIDTemporalModel(
@@ -468,13 +493,16 @@ def main() -> None:
             epoch=epoch,
             total_epochs=config.stage2.num_epochs,
             log_every=args.log_every,
+            run_name=args.run_name,
         )
-        print(f"epoch={epoch} train_loss={train_loss:.4f}")
+        print(f"{log_prefix(args.run_name)} epoch={epoch} train_loss={train_loss:.4f}")
 
         if val_loader is None:
             continue
         if args.validate_every > 1 and epoch % args.validate_every != 0:
-            print(f"epoch={epoch} validation=skipped validate_every={args.validate_every}")
+            print(
+                f"{log_prefix(args.run_name)} epoch={epoch} validation=skipped validate_every={args.validate_every}"
+            )
             continue
         metrics = validate(
             model=model,
@@ -486,10 +514,12 @@ def main() -> None:
             epoch=epoch,
             total_epochs=config.stage2.num_epochs,
             log_every=args.log_every,
+            run_name=args.run_name,
         )
         print(
             " ".join(
                 [
+                    log_prefix(args.run_name),
                     f"epoch={epoch}",
                     f"val_loss={metrics['loss']:.4f}",
                     f"precision={metrics['precision']:.4f}",
@@ -523,7 +553,7 @@ def main() -> None:
             save_checkpoint(config.paths.checkpoints_dir / args.output_name, payload)
 
     if best_metrics:
-        print(f"best_f1={best_metrics['f1_score']:.4f}")
+        print(f"{log_prefix(args.run_name)} best_f1={best_metrics['f1_score']:.4f}")
     else:
         payload = checkpoint_payload(
             model_state_dict=model.state_dict(),
