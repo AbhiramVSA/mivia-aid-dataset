@@ -8,6 +8,7 @@ from typing import Iterable
 class PostprocessResult:
     predicted_start_s: float | None
     max_score: float
+    video_score: float
 
 
 def median_filter_1d(values: Iterable[float], kernel_size: int = 3) -> list[float]:
@@ -29,18 +30,33 @@ def predict_start_time(
     timestamps_s: list[float],
     tau_empty: float,
     tau_start: float,
+    tau_video: float = 0.0,
+    video_score: float | None = None,
     median_kernel_size: int = 3,
+    min_consecutive_steps: int = 1,
 ) -> PostprocessResult:
     if len(step_scores) != len(timestamps_s):
         raise ValueError("step_scores and timestamps_s must have the same length")
+    effective_video_score = 1.0 if video_score is None else float(video_score)
     if not step_scores:
-        return PostprocessResult(predicted_start_s=None, max_score=0.0)
+        return PostprocessResult(predicted_start_s=None, max_score=0.0, video_score=effective_video_score)
 
     smoothed_scores = median_filter_1d(step_scores, kernel_size=median_kernel_size)
     max_score = max(smoothed_scores)
-    if max_score < tau_empty:
-        return PostprocessResult(predicted_start_s=None, max_score=max_score)
-    for score, timestamp in zip(smoothed_scores, timestamps_s):
+    if effective_video_score < tau_video or max_score < tau_empty:
+        return PostprocessResult(predicted_start_s=None, max_score=max_score, video_score=effective_video_score)
+
+    active_count = 0
+    for index, (score, timestamp) in enumerate(zip(smoothed_scores, timestamps_s)):
         if score >= tau_start:
-            return PostprocessResult(predicted_start_s=timestamp, max_score=max_score)
-    return PostprocessResult(predicted_start_s=None, max_score=max_score)
+            active_count += 1
+            if active_count >= max(1, min_consecutive_steps):
+                onset_index = max(0, index - active_count + 1)
+                return PostprocessResult(
+                    predicted_start_s=timestamps_s[onset_index],
+                    max_score=max_score,
+                    video_score=effective_video_score,
+                )
+        else:
+            active_count = 0
+    return PostprocessResult(predicted_start_s=None, max_score=max_score, video_score=effective_video_score)

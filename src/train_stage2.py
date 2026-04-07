@@ -180,6 +180,81 @@ def compute_stage2_loss(
     return step_loss_mean + lambda_video * video_loss
 
 
+def sweep_postprocess_thresholds(
+    *,
+    annotations: list[VideoAnnotation],
+    config: ExperimentConfig,
+    per_video_scores: dict[str, list[tuple[float, float]]],
+    per_video_probs: dict[str, list[float]],
+) -> dict[str, float]:
+    best: dict[str, float] | None = None
+    for tau_empty in config.postprocess.tau_empty_grid:
+        for tau_start in config.postprocess.tau_start_grid:
+            for tau_video in config.postprocess.tau_video_grid:
+                for min_consecutive_steps in config.postprocess.consecutive_hits_grid:
+                    prediction_records: list[PredictionRecord] = []
+                    for annotation in annotations:
+                        merged: dict[float, list[float]] = defaultdict(list)
+                        for timestamp, score in per_video_scores.get(annotation.video_id, []):
+                            merged[float(timestamp)].append(float(score))
+                        timestamps = sorted(merged)
+                        scores = [sum(merged[t]) / len(merged[t]) for t in timestamps]
+                        video_prob_list = per_video_probs.get(annotation.video_id, [])
+                        video_score = (
+                            sum(video_prob_list) / len(video_prob_list) if video_prob_list else 0.0
+                        )
+                        post = predict_start_time(
+                            scores,
+                            timestamps,
+                            tau_empty=float(tau_empty),
+                            tau_start=float(tau_start),
+                            tau_video=float(tau_video),
+                            video_score=video_score,
+                            median_kernel_size=config.postprocess.median_kernel_size,
+                            min_consecutive_steps=int(min_consecutive_steps),
+                        )
+                        prediction_records.append(
+                            PredictionRecord(
+                                video_id=annotation.video_id,
+                                is_positive=annotation.is_positive,
+                                ground_truth_start_s=float(annotation.start_s)
+                                if annotation.start_s is not None
+                                else None,
+                                predicted_start_s=post.predicted_start_s,
+                            )
+                        )
+                    contest_metrics = compute_contest_metrics(prediction_records)
+                    candidate = {
+                        "precision": contest_metrics.precision,
+                        "recall": contest_metrics.recall,
+                        "f1_score": contest_metrics.f1_score,
+                        "tp": float(contest_metrics.true_positives),
+                        "fp": float(contest_metrics.false_positives),
+                        "fn": float(contest_metrics.false_negatives),
+                        "tau_empty": float(tau_empty),
+                        "tau_start": float(tau_start),
+                        "tau_video": float(tau_video),
+                        "min_consecutive_steps": float(min_consecutive_steps),
+                    }
+                    if best is None:
+                        best = candidate
+                        continue
+                    if candidate["f1_score"] > best["f1_score"]:
+                        best = candidate
+                        continue
+                    if candidate["f1_score"] == best["f1_score"] and candidate["precision"] > best["precision"]:
+                        best = candidate
+                        continue
+                    if (
+                        candidate["f1_score"] == best["f1_score"]
+                        and candidate["precision"] == best["precision"]
+                        and candidate["recall"] > best["recall"]
+                    ):
+                        best = candidate
+    assert best is not None
+    return best
+
+
 def train_one_epoch(
     model: AIDTemporalModel,
     loader: DataLoader,
@@ -262,8 +337,8 @@ def validate(
     log_every: int,
 ) -> dict[str, float]:
     model.eval()
-    annotation_by_id = {annotation.video_id: annotation for annotation in annotations}
     per_video_scores: dict[str, list[tuple[float, float]]] = defaultdict(list)
+    per_video_probs: dict[str, list[float]] = defaultdict(list)
     total_loss = 0.0
     num_batches = 0
     val_start = perf_counter()
@@ -289,11 +364,13 @@ def validate(
         num_batches += 1
 
         probs = torch.sigmoid(step_logits).cpu()
+        video_probs = torch.sigmoid(video_logits).cpu()
         for sample_index, video_id in enumerate(batch.video_ids):
             valid_mask = batch.step_mask[sample_index]
             timestamps = batch.timestamps_s[sample_index][valid_mask].tolist()
             scores = probs[sample_index][valid_mask].tolist()
             per_video_scores[video_id].extend(zip(timestamps, scores))
+            per_video_probs[video_id].append(float(video_probs[sample_index].item()))
 
         if log_every > 0 and (batch_index % log_every == 0 or batch_index == len(loader)):
             now = perf_counter()
@@ -316,35 +393,21 @@ def validate(
             )
             batch_timer = perf_counter()
 
-    prediction_records: list[PredictionRecord] = []
-    for video_id, annotation in annotation_by_id.items():
-        merged: dict[float, list[float]] = defaultdict(list)
-        for timestamp, score in per_video_scores.get(video_id, []):
-            merged[float(timestamp)].append(float(score))
-        timestamps = sorted(merged)
-        scores = [sum(merged[t]) / len(merged[t]) for t in timestamps]
-        post = predict_start_time(
-            scores,
-            timestamps,
-            tau_empty=config.postprocess.default_tau_empty,
-            tau_start=config.postprocess.default_tau_start,
-            median_kernel_size=config.postprocess.median_kernel_size,
-        )
-        prediction_records.append(
-            PredictionRecord(
-                video_id=video_id,
-                is_positive=annotation.is_positive,
-                ground_truth_start_s=float(annotation.start_s) if annotation.start_s is not None else None,
-                predicted_start_s=post.predicted_start_s,
-            )
-        )
-
-    metrics = compute_contest_metrics(prediction_records)
+    sweep_metrics = sweep_postprocess_thresholds(
+        annotations=annotations,
+        config=config,
+        per_video_scores=per_video_scores,
+        per_video_probs=per_video_probs,
+    )
     return {
         "loss": total_loss / max(1, num_batches),
-        "precision": metrics.precision,
-        "recall": metrics.recall,
-        "f1_score": metrics.f1_score,
+        "precision": sweep_metrics["precision"],
+        "recall": sweep_metrics["recall"],
+        "f1_score": sweep_metrics["f1_score"],
+        "tau_empty": sweep_metrics["tau_empty"],
+        "tau_start": sweep_metrics["tau_start"],
+        "tau_video": sweep_metrics["tau_video"],
+        "min_consecutive_steps": sweep_metrics["min_consecutive_steps"],
     }
 
 
@@ -426,6 +489,10 @@ def main() -> None:
                     f"precision={metrics['precision']:.4f}",
                     f"recall={metrics['recall']:.4f}",
                     f"f1={metrics['f1_score']:.4f}",
+                    f"tau_empty={metrics['tau_empty']:.2f}",
+                    f"tau_start={metrics['tau_start']:.2f}",
+                    f"tau_video={metrics['tau_video']:.2f}",
+                    f"min_consecutive={int(metrics['min_consecutive_steps'])}",
                 ]
             )
         )
@@ -440,8 +507,10 @@ def main() -> None:
                 extra={
                     "stage": 2,
                     "lambda_video": args.lambda_video,
-                    "tau_empty": config.postprocess.default_tau_empty,
-                    "tau_start": config.postprocess.default_tau_start,
+                    "tau_empty": metrics["tau_empty"],
+                    "tau_start": metrics["tau_start"],
+                    "tau_video": metrics["tau_video"],
+                    "min_consecutive_steps": int(metrics["min_consecutive_steps"]),
                 },
             )
             save_checkpoint(config.paths.checkpoints_dir / args.output_name, payload)

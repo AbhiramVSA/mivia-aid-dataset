@@ -61,6 +61,15 @@ def _load_bundle(checkpoint_path: str) -> tuple[AIDTemporalModel, torch.device, 
     config.postprocess.median_kernel_size = _config_value(
         config_dict, "postprocess", "median_kernel_size", default=config.postprocess.median_kernel_size
     )
+    config.postprocess.default_tau_video = _config_value(
+        config_dict, "postprocess", "default_tau_video", default=config.postprocess.default_tau_video
+    )
+    config.postprocess.default_min_consecutive_steps = _config_value(
+        config_dict,
+        "postprocess",
+        "default_min_consecutive_steps",
+        default=config.postprocess.default_min_consecutive_steps,
+    )
     model = AIDTemporalModel(
         backbone_name=backbone_name,
         hidden_size=hidden_size,
@@ -87,6 +96,7 @@ def infer_single_video(video_path: Path, checkpoint_path: Path | None = None) ->
     max_steps = config.stage2.max_steps_per_sample
     window_stride = config.stage2.window_stride_steps
     aggregated: dict[float, list[float]] = {}
+    video_scores: list[float] = []
 
     start = 0
     while start < len(clip_spans):
@@ -111,8 +121,9 @@ def infer_single_video(video_path: Path, checkpoint_path: Path | None = None) ->
             for _, end_idx in window_spans
         ]
         clip_tensor = preprocess_clip_batch(clips, backbone_name=config.model.backbone_name).unsqueeze(0).to(device)
-        step_logits, _ = model(clip_tensor)
+        step_logits, video_logits = model(clip_tensor)
         step_scores = torch.sigmoid(step_logits[0]).cpu().tolist()
+        video_scores.append(float(torch.sigmoid(video_logits[0]).item()))
         timestamps = [(end_idx - 1) / float(config.video.sample_fps) for _, end_idx in window_spans]
         for timestamp, score in zip(timestamps, step_scores):
             aggregated.setdefault(timestamp, []).append(float(score))
@@ -122,11 +133,17 @@ def infer_single_video(video_path: Path, checkpoint_path: Path | None = None) ->
 
     timestamps = sorted(aggregated)
     scores = [sum(aggregated[t]) / len(aggregated[t]) for t in timestamps]
+    video_score = sum(video_scores) / max(1, len(video_scores))
     result = predict_start_time(
         scores,
         timestamps,
         tau_empty=float(extra.get("tau_empty", config.postprocess.default_tau_empty)),
         tau_start=float(extra.get("tau_start", config.postprocess.default_tau_start)),
+        tau_video=float(extra.get("tau_video", config.postprocess.default_tau_video)),
+        video_score=video_score,
         median_kernel_size=config.postprocess.median_kernel_size,
+        min_consecutive_steps=int(
+            extra.get("min_consecutive_steps", config.postprocess.default_min_consecutive_steps)
+        ),
     )
     return result.predicted_start_s
