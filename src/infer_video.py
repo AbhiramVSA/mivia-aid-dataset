@@ -37,6 +37,7 @@ def _load_bundle(checkpoint_path: str) -> tuple[AIDTemporalModel, torch.device, 
     config = ExperimentConfig().resolved()
     backbone_name = _config_value(config_dict, "model", "backbone_name", default=config.model.backbone_name)
     hidden_size = _config_value(config_dict, "model", "hidden_size", default=config.model.hidden_size)
+    temporal_model = _config_value(config_dict, "model", "temporal_model", default=config.model.temporal_model)
     temporal_channels = tuple(
         _config_value(config_dict, "model", "temporal_channels", default=config.model.temporal_channels)
     )
@@ -52,6 +53,7 @@ def _load_bundle(checkpoint_path: str) -> tuple[AIDTemporalModel, torch.device, 
     )
     config.model.backbone_name = backbone_name
     config.model.hidden_size = hidden_size
+    config.model.temporal_model = temporal_model
     config.model.temporal_channels = temporal_channels
     config.model.dropout = dropout
     config.model.transformer_layers = transformer_layers
@@ -88,6 +90,7 @@ def _load_bundle(checkpoint_path: str) -> tuple[AIDTemporalModel, torch.device, 
     model = AIDTemporalModel(
         backbone_name=backbone_name,
         hidden_size=hidden_size,
+        temporal_model=temporal_model,
         temporal_channels=temporal_channels,
         dropout=dropout,
         transformer_layers=transformer_layers,

@@ -74,6 +74,7 @@ class Stage2TrainConfig:
     max_steps_per_sample: int = 16
     window_stride_steps: int = 8
     onset_sigma_seconds: float = 1.0
+    target_mode: str = "cumulative"
 
 
 @dataclass(slots=True)
@@ -94,6 +95,7 @@ class PostprocessConfig:
 class ModelConfig:
     backbone_name: str = "MCG-NJU/videomae-base"
     hidden_size: int = 768
+    temporal_model: str = "transformer"
     temporal_channels: tuple[int, int, int] = (512, 512, 256)
     dropout: float = 0.1
     transformer_layers: int = 2

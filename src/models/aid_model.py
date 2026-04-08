@@ -3,7 +3,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
-from src.models.temporal_head import TemporalTransformerHead
+from src.models.temporal_head import TemporalConvHead, TemporalTransformerHead
 from src.models.videomae_encoder import VideoMAEClipEncoder
 
 
@@ -12,6 +12,7 @@ class AIDTemporalModel(nn.Module):
         self,
         backbone_name: str,
         hidden_size: int = 768,
+        temporal_model: str = "transformer",
         temporal_channels: tuple[int, int, int] = (512, 512, 256),
         dropout: float = 0.1,
         transformer_layers: int = 2,
@@ -20,13 +21,23 @@ class AIDTemporalModel(nn.Module):
     ) -> None:
         super().__init__()
         self.encoder = VideoMAEClipEncoder(backbone_name=backbone_name)
-        self.temporal_head = TemporalTransformerHead(
-            hidden_size=hidden_size,
-            dropout=dropout,
-            num_layers=transformer_layers,
-            num_heads=transformer_heads,
-            ffn_dim=transformer_ffn_dim,
-        )
+        self.temporal_model = temporal_model
+        if temporal_model == "conv":
+            self.temporal_head = TemporalConvHead(
+                hidden_size=hidden_size,
+                channels=temporal_channels,
+                dropout=dropout,
+            )
+        elif temporal_model == "transformer":
+            self.temporal_head = TemporalTransformerHead(
+                hidden_size=hidden_size,
+                dropout=dropout,
+                num_layers=transformer_layers,
+                num_heads=transformer_heads,
+                ffn_dim=transformer_ffn_dim,
+            )
+        else:
+            raise ValueError(f"Unsupported temporal_model: {temporal_model}")
 
     def forward(self, clips: torch.Tensor, step_mask: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
         """Args:

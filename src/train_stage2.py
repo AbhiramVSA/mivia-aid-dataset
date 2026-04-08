@@ -25,6 +25,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-name", type=str, default="stage2_best.pt")
     parser.add_argument("--init-checkpoint", type=Path, default=None)
     parser.add_argument("--lambda-video", type=float, default=0.5)
+    parser.add_argument("--temporal-model", type=str, choices=("conv", "transformer"), default=None)
+    parser.add_argument("--target-mode", type=str, choices=("cumulative", "onset"), default=None)
     parser.add_argument("--max-train-videos", type=int, default=None)
     parser.add_argument("--max-val-videos", type=int, default=None)
     parser.add_argument("--batch-size", type=int, default=None)
@@ -95,7 +97,7 @@ def make_dataloaders(
         backbone_name=config.model.backbone_name,
         max_steps=config.stage2.max_steps_per_sample,
         window_stride=config.stage2.window_stride_steps,
-        onset_sigma_s=config.stage2.onset_sigma_seconds,
+        onset_sigma_s=config.stage2.onset_sigma_seconds if config.stage2.target_mode == "onset" else None,
     )
     train_loader = DataLoader(
         train_dataset,
@@ -122,7 +124,7 @@ def make_dataloaders(
             backbone_name=config.model.backbone_name,
             max_steps=config.stage2.max_steps_per_sample,
             window_stride=config.stage2.window_stride_steps,
-            onset_sigma_s=config.stage2.onset_sigma_seconds,
+            onset_sigma_s=config.stage2.onset_sigma_seconds if config.stage2.target_mode == "onset" else None,
         )
         val_loader = DataLoader(
             val_dataset,
@@ -174,12 +176,12 @@ def maybe_load_init_checkpoint(model: AIDTemporalModel, checkpoint_path: Path | 
 def compute_stage2_loss(
     step_logits: torch.Tensor,
     video_logits: torch.Tensor,
-    onset_targets: torch.Tensor,
+    step_targets: torch.Tensor,
     step_mask: torch.Tensor,
     video_target: torch.Tensor,
     lambda_video: float,
 ) -> torch.Tensor:
-    step_loss = F.binary_cross_entropy_with_logits(step_logits, onset_targets, reduction="none")
+    step_loss = F.binary_cross_entropy_with_logits(step_logits, step_targets, reduction="none")
     valid = step_mask.bool()
     step_loss = (step_loss * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1)
     step_loss_mean = step_loss.mean()
@@ -274,6 +276,7 @@ def train_one_epoch(
     total_epochs: int,
     log_every: int,
     run_name: str,
+    target_mode: str,
 ) -> float:
     model.train()
     running_loss = 0.0
@@ -283,7 +286,11 @@ def train_one_epoch(
     for batch_index, batch in enumerate(loader, start=1):
         data_ready_time = perf_counter()
         clip_tensor = batch.clip_tensor.to(device, non_blocking=True)
-        onset_targets = batch.onset_targets.to(device, non_blocking=True)
+        selected_targets = (
+            batch.onset_targets.to(device, non_blocking=True)
+            if target_mode == "onset"
+            else batch.step_targets.to(device, non_blocking=True)
+        )
         step_mask = batch.step_mask.to(device, non_blocking=True)
         video_target = batch.video_target.to(device, non_blocking=True)
 
@@ -296,7 +303,7 @@ def train_one_epoch(
             loss = compute_stage2_loss(
                 step_logits=step_logits,
                 video_logits=video_logits,
-                onset_targets=onset_targets,
+                step_targets=selected_targets,
                 step_mask=step_mask,
                 video_target=video_target,
                 lambda_video=lambda_video,
@@ -346,6 +353,7 @@ def validate(
     total_epochs: int,
     log_every: int,
     run_name: str,
+    target_mode: str,
 ) -> dict[str, float]:
     model.eval()
     per_video_scores: dict[str, list[tuple[float, float]]] = defaultdict(list)
@@ -358,7 +366,11 @@ def validate(
     for batch_index, batch in enumerate(loader, start=1):
         data_ready_time = perf_counter()
         clip_tensor = batch.clip_tensor.to(device, non_blocking=True)
-        onset_targets = batch.onset_targets.to(device, non_blocking=True)
+        selected_targets = (
+            batch.onset_targets.to(device, non_blocking=True)
+            if target_mode == "onset"
+            else batch.step_targets.to(device, non_blocking=True)
+        )
         step_mask = batch.step_mask.to(device, non_blocking=True)
         video_target = batch.video_target.to(device, non_blocking=True)
 
@@ -366,7 +378,7 @@ def validate(
         loss = compute_stage2_loss(
             step_logits=step_logits,
             video_logits=video_logits,
-            onset_targets=onset_targets,
+            step_targets=selected_targets,
             step_mask=step_mask,
             video_target=video_target,
             lambda_video=lambda_video,
@@ -428,6 +440,10 @@ def main() -> None:
     config = ExperimentConfig().resolved()
     if args.batch_size is not None:
         config.stage2.batch_size = args.batch_size
+    if args.temporal_model is not None:
+        config.model.temporal_model = args.temporal_model
+    if args.target_mode is not None:
+        config.stage2.target_mode = args.target_mode
     if args.max_steps is not None:
         config.stage2.max_steps_per_sample = args.max_steps
     if args.window_stride is not None:
@@ -436,6 +452,7 @@ def main() -> None:
         config.stage2.num_workers = args.num_workers
     if args.num_epochs is not None:
         config.stage2.num_epochs = args.num_epochs
+    config.postprocess.prediction_mode = "peak" if config.stage2.target_mode == "onset" else "cumulative"
     print_device_diagnostics()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_dataset, train_loader, val_dataset, val_loader = make_dataloaders(config, args)
@@ -443,6 +460,8 @@ def main() -> None:
         " ".join(
             [
                 log_prefix(args.run_name),
+                f"temporal_model={config.model.temporal_model}",
+                f"target_mode={config.stage2.target_mode}",
                 f"lambda_video={args.lambda_video}",
                 f"batch_size={config.stage2.batch_size}",
                 f"max_steps={config.stage2.max_steps_per_sample}",
@@ -462,6 +481,7 @@ def main() -> None:
     model = AIDTemporalModel(
         backbone_name=config.model.backbone_name,
         hidden_size=config.model.hidden_size,
+        temporal_model=config.model.temporal_model,
         temporal_channels=config.model.temporal_channels,
         dropout=config.model.dropout,
         transformer_layers=config.model.transformer_layers,
@@ -494,6 +514,7 @@ def main() -> None:
             total_epochs=config.stage2.num_epochs,
             log_every=args.log_every,
             run_name=args.run_name,
+            target_mode=config.stage2.target_mode,
         )
         print(f"{log_prefix(args.run_name)} epoch={epoch} train_loss={train_loss:.4f}")
 
@@ -515,6 +536,7 @@ def main() -> None:
             total_epochs=config.stage2.num_epochs,
             log_every=args.log_every,
             run_name=args.run_name,
+            target_mode=config.stage2.target_mode,
         )
         print(
             " ".join(
