@@ -1,0 +1,39 @@
+from __future__ import annotations
+
+import torch
+from torch import nn
+
+from src.models.temporal_head import TemporalConvHead, TemporalTransformerHead
+
+
+class TemporalOnlyModel(nn.Module):
+    def __init__(
+        self,
+        hidden_size: int = 768,
+        temporal_model: str = "transformer",
+        temporal_channels: tuple[int, int, int] = (512, 512, 256),
+        dropout: float = 0.1,
+        transformer_layers: int = 2,
+        transformer_heads: int = 8,
+        transformer_ffn_dim: int = 2048,
+    ) -> None:
+        super().__init__()
+        if temporal_model == "conv":
+            self.temporal_head = TemporalConvHead(
+                hidden_size=hidden_size,
+                channels=temporal_channels,
+                dropout=dropout,
+            )
+        elif temporal_model == "transformer":
+            self.temporal_head = TemporalTransformerHead(
+                hidden_size=hidden_size,
+                dropout=dropout,
+                num_layers=transformer_layers,
+                num_heads=transformer_heads,
+                ffn_dim=transformer_ffn_dim,
+            )
+        else:
+            raise ValueError(f"Unsupported temporal_model: {temporal_model}")
+
+    def forward(self, features: torch.Tensor, step_mask: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+        return self.temporal_head(features, step_mask=step_mask)
