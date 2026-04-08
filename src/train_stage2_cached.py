@@ -121,7 +121,7 @@ def train_one_epoch(
     batch_timer = perf_counter()
     for batch_index, batch in enumerate(loader, start=1):
         data_ready_time = perf_counter()
-        features = batch.features.to(device, non_blocking=True)
+        features = batch.features.to(device=device, dtype=torch.float32, non_blocking=True)
         selected_targets = (
             batch.onset_targets.to(device, non_blocking=True)
             if target_mode == "onset"
@@ -199,7 +199,7 @@ def validate(
 
     for batch_index, batch in enumerate(loader, start=1):
         data_ready_time = perf_counter()
-        features = batch.features.to(device, non_blocking=True)
+        features = batch.features.to(device=device, dtype=torch.float32, non_blocking=True)
         selected_targets = (
             batch.onset_targets.to(device, non_blocking=True)
             if target_mode == "onset"
