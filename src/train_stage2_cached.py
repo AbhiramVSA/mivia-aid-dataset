@@ -103,6 +103,7 @@ def print_dataset_summary(name: str, dataset: CachedSequenceDataset, loader: Dat
 def train_one_epoch(
     model: TemporalOnlyModel,
     loader: DataLoader,
+    config: ExperimentConfig,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     amp: bool,
@@ -320,6 +321,7 @@ def main() -> None:
         train_loss = train_one_epoch(
             model=model,
             loader=train_loader,
+            config=config,
             optimizer=optimizer,
             device=device,
             amp=config.stage2.amp,
