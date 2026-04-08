@@ -283,6 +283,7 @@ def sweep_postprocess_thresholds(
 def train_one_epoch(
     model: AIDTemporalModel,
     loader: DataLoader,
+    config: ExperimentConfig,
     optimizer: torch.optim.Optimizer,
     device: torch.device,
     amp: bool,
@@ -529,6 +530,7 @@ def main() -> None:
         train_loss = train_one_epoch(
             model=model,
             loader=train_loader,
+            config=config,
             optimizer=optimizer,
             device=device,
             amp=config.stage2.amp,
