@@ -36,6 +36,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-epochs", type=int, default=None)
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--validate-every", type=int, default=1)
+    parser.add_argument("--monotonic-loss-weight", type=float, default=None)
     return parser.parse_args()
 
 
@@ -471,6 +472,8 @@ def main() -> None:
         config.stage2.num_workers = args.num_workers
     if args.num_epochs is not None:
         config.stage2.num_epochs = args.num_epochs
+    if args.monotonic_loss_weight is not None:
+        config.stage2.monotonic_loss_weight = args.monotonic_loss_weight
     config.postprocess.prediction_mode = "peak" if config.stage2.target_mode == "onset" else "cumulative"
     print_device_diagnostics()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")

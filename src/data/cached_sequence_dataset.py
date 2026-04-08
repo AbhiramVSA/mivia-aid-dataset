@@ -38,6 +38,13 @@ class CachedWindowRecord:
     step_end: int
 
 
+@dataclass(slots=True)
+class CachedAnnotationMeta:
+    video_id: str
+    is_positive: bool
+    start_s: float | None
+
+
 def load_feature_cache(cache_path: Path) -> dict:
     return torch.load(cache_path, map_location="cpu", weights_only=False)
 
@@ -48,14 +55,23 @@ class CachedSequenceDataset(Dataset[CachedSequenceSample]):
         self.max_steps = max_steps
         self.window_stride = window_stride or max_steps
         self.cache_paths = sorted(cache_dir.glob("*.pt"))
+        self.annotation_metas: list[CachedAnnotationMeta] = []
         self.records = self._build_window_records()
         self.total_window_steps = sum(record.step_end - record.step_start for record in self.records)
         self.max_window_steps = max((record.step_end - record.step_start for record in self.records), default=0)
+        self.sample_weights = self._build_sample_weights()
 
     def _build_window_records(self) -> list[CachedWindowRecord]:
         records: list[CachedWindowRecord] = []
         for cache_path in self.cache_paths:
             bundle = load_feature_cache(cache_path)
+            self.annotation_metas.append(
+                CachedAnnotationMeta(
+                    video_id=str(bundle["video_id"]),
+                    is_positive=bool(bundle["source_positive"].item() > 0.5),
+                    start_s=float(bundle["ground_truth_start_s"]) if bundle["ground_truth_start_s"] is not None else None,
+                )
+            )
             total_steps = int(bundle["features"].shape[0])
             if total_steps == 0:
                 continue
@@ -71,6 +87,17 @@ class CachedSequenceDataset(Dataset[CachedSequenceSample]):
                     break
                 start += self.window_stride
         return records
+
+    def _build_sample_weights(self) -> torch.Tensor:
+        if not self.records:
+            return torch.zeros((0,), dtype=torch.float32)
+        windows_per_video: dict[Path, int] = {}
+        for record in self.records:
+            windows_per_video[record.cache_path] = windows_per_video.get(record.cache_path, 0) + 1
+        return torch.tensor(
+            [1.0 / float(windows_per_video[record.cache_path]) for record in self.records],
+            dtype=torch.float32,
+        )
 
     def __len__(self) -> int:
         return len(self.records)

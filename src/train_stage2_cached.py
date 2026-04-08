@@ -6,7 +6,7 @@ from pathlib import Path
 from time import perf_counter
 
 import torch
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from src.config import ExperimentConfig
 from src.data.cached_sequence_dataset import CachedSequenceDataset, collate_cached_sequence_batch
@@ -37,6 +37,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-epochs", type=int, default=20)
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--validate-every", type=int, default=1)
+    parser.add_argument("--monotonic-loss-weight", type=float, default=None)
+    parser.add_argument("--disable-video-balanced-sampling", action="store_true")
     return parser.parse_args()
 
 
@@ -53,10 +55,20 @@ def make_dataloaders(
         max_steps=config.stage2.max_steps_per_sample,
         window_stride=config.stage2.window_stride_steps,
     )
+    train_sampler = None
+    shuffle = True
+    if not args.disable_video_balanced_sampling:
+        train_sampler = WeightedRandomSampler(
+            weights=train_dataset.sample_weights,
+            num_samples=len(train_dataset),
+            replacement=True,
+        )
+        shuffle = False
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.stage2.batch_size,
-        shuffle=True,
+        shuffle=shuffle,
+        sampler=train_sampler,
         num_workers=config.stage2.num_workers,
         pin_memory=True,
         persistent_workers=config.stage2.num_workers > 0,
@@ -182,19 +194,7 @@ def validate(
     val_start = perf_counter()
     batch_timer = perf_counter()
 
-    for cache_path in dataset.cache_paths:
-        bundle = torch.load(cache_path, map_location="cpu", weights_only=False)
-        annotations.append(
-            type(
-                "AnnotationProxy",
-                (),
-                {
-                    "video_id": bundle["video_id"],
-                    "is_positive": bool(bundle["source_positive"].item() > 0.5),
-                    "start_s": float(bundle["ground_truth_start_s"]) if bundle["ground_truth_start_s"] is not None else None,
-                },
-            )()
-        )
+    annotations.extend(dataset.annotation_metas)
 
     for batch_index, batch in enumerate(loader, start=1):
         data_ready_time = perf_counter()
@@ -275,6 +275,8 @@ def main() -> None:
     config.stage2.num_epochs = args.num_epochs
     config.stage2.target_mode = args.target_mode
     config.model.temporal_model = args.temporal_model
+    if args.monotonic_loss_weight is not None:
+        config.stage2.monotonic_loss_weight = args.monotonic_loss_weight
     config.postprocess.prediction_mode = "peak" if args.target_mode == "onset" else "cumulative"
     print_device_diagnostics()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -288,6 +290,7 @@ def main() -> None:
                 f"target_mode={config.stage2.target_mode}",
                 f"lambda_video={args.lambda_video}",
                 f"monotonic_weight={config.stage2.monotonic_loss_weight}",
+                f"video_balanced_sampling={not args.disable_video_balanced_sampling}",
                 f"batch_size={config.stage2.batch_size}",
                 f"max_steps={config.stage2.max_steps_per_sample}",
                 f"window_stride={config.stage2.window_stride_steps}",
