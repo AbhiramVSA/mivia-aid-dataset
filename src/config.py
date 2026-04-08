@@ -91,7 +91,7 @@ class PostprocessConfig:
     default_tau_keep: float = 0.3
     default_tau_video: float = 0.0
     default_min_consecutive_steps: int = 1
-    prediction_mode: str = "peak"
+    prediction_mode: str = "cumulative"
 
 
 @dataclass(slots=True)
