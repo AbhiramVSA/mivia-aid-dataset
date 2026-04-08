@@ -130,6 +130,8 @@ def train_one_epoch(
                 step_mask=step_mask,
                 video_target=video_target,
                 lambda_video=lambda_video,
+                target_mode=target_mode,
+                monotonic_loss_weight=config.stage2.monotonic_loss_weight,
             )
         loss.backward()
         optimizer.step()
@@ -212,6 +214,8 @@ def validate(
             step_mask=step_mask,
             video_target=video_target,
             lambda_video=lambda_video,
+            target_mode=target_mode,
+            monotonic_loss_weight=config.stage2.monotonic_loss_weight,
         )
         total_loss += float(loss.item())
         num_batches += 1
@@ -255,6 +259,7 @@ def validate(
         "f1_score": sweep_metrics["f1_score"],
         "tau_empty": sweep_metrics["tau_empty"],
         "tau_start": sweep_metrics["tau_start"],
+        "tau_keep": sweep_metrics["tau_keep"],
         "tau_video": sweep_metrics["tau_video"],
         "min_consecutive_steps": sweep_metrics["min_consecutive_steps"],
     }
@@ -282,6 +287,7 @@ def main() -> None:
                 f"temporal_model={config.model.temporal_model}",
                 f"target_mode={config.stage2.target_mode}",
                 f"lambda_video={args.lambda_video}",
+                f"monotonic_weight={config.stage2.monotonic_loss_weight}",
                 f"batch_size={config.stage2.batch_size}",
                 f"max_steps={config.stage2.max_steps_per_sample}",
                 f"window_stride={config.stage2.window_stride_steps}",
@@ -349,6 +355,7 @@ def main() -> None:
                     f"f1={metrics['f1_score']:.4f}",
                     f"tau_empty={metrics['tau_empty']:.2f}",
                     f"tau_start={metrics['tau_start']:.2f}",
+                    f"tau_keep={metrics['tau_keep']:.2f}",
                     f"tau_video={metrics['tau_video']:.2f}",
                     f"min_consecutive={int(metrics['min_consecutive_steps'])}",
                 ]
@@ -367,6 +374,7 @@ def main() -> None:
                     "lambda_video": args.lambda_video,
                     "tau_empty": metrics["tau_empty"],
                     "tau_start": metrics["tau_start"],
+                    "tau_keep": metrics["tau_keep"],
                     "tau_video": metrics["tau_video"],
                     "min_consecutive_steps": int(metrics["min_consecutive_steps"]),
                     "prediction_mode": config.postprocess.prediction_mode,

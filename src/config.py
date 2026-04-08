@@ -75,6 +75,7 @@ class Stage2TrainConfig:
     window_stride_steps: int = 8
     onset_sigma_seconds: float = 1.0
     target_mode: str = "cumulative"
+    monotonic_loss_weight: float = 0.1
 
 
 @dataclass(slots=True)
@@ -82,10 +83,12 @@ class PostprocessConfig:
     median_kernel_size: int = 3
     tau_empty_grid: tuple[float, ...] = (0.2, 0.3, 0.4, 0.5, 0.6)
     tau_start_grid: tuple[float, ...] = (0.3, 0.4, 0.5, 0.6, 0.7)
+    tau_keep_grid: tuple[float, ...] = (0.1, 0.2, 0.3, 0.4, 0.5)
     tau_video_grid: tuple[float, ...] = (0.0, 0.3, 0.4, 0.5, 0.6, 0.7)
     consecutive_hits_grid: tuple[int, ...] = (1, 2, 3)
     default_tau_empty: float = 0.4
     default_tau_start: float = 0.5
+    default_tau_keep: float = 0.3
     default_tau_video: float = 0.0
     default_min_consecutive_steps: int = 1
     prediction_mode: str = "peak"

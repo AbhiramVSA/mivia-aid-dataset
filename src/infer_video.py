@@ -78,6 +78,9 @@ def _load_bundle(checkpoint_path: str) -> tuple[AIDTemporalModel, torch.device, 
     config.postprocess.default_tau_video = _config_value(
         config_dict, "postprocess", "default_tau_video", default=config.postprocess.default_tau_video
     )
+    config.postprocess.default_tau_keep = _config_value(
+        config_dict, "postprocess", "default_tau_keep", default=config.postprocess.default_tau_keep
+    )
     config.postprocess.default_min_consecutive_steps = _config_value(
         config_dict,
         "postprocess",
@@ -160,6 +163,7 @@ def infer_single_video(video_path: Path, checkpoint_path: Path | None = None) ->
         timestamps,
         tau_empty=float(extra.get("tau_empty", config.postprocess.default_tau_empty)),
         tau_start=float(extra.get("tau_start", config.postprocess.default_tau_start)),
+        tau_keep=float(extra.get("tau_keep", config.postprocess.default_tau_keep)),
         tau_video=float(extra.get("tau_video", config.postprocess.default_tau_video)),
         video_score=video_score,
         median_kernel_size=config.postprocess.median_kernel_size,

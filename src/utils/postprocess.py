@@ -30,6 +30,7 @@ def predict_start_time(
     timestamps_s: list[float],
     tau_empty: float,
     tau_start: float,
+    tau_keep: float | None = None,
     tau_video: float = 0.0,
     video_score: float | None = None,
     median_kernel_size: int = 3,
@@ -58,8 +59,10 @@ def predict_start_time(
         )
 
     active_count = 0
+    continuation_threshold = tau_start if tau_keep is None else min(tau_start, tau_keep)
     for index, (score, timestamp) in enumerate(zip(smoothed_scores, timestamps_s)):
-        if score >= tau_start:
+        threshold = tau_start if active_count == 0 else continuation_threshold
+        if score >= threshold:
             active_count += 1
             if active_count >= max(1, min_consecutive_steps):
                 onset_index = max(0, index - active_count + 1)
