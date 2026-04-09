@@ -37,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-epochs", type=int, default=None)
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--validate-every", type=int, default=1)
+    parser.add_argument("--early-stopping-patience", type=int, default=None)
     parser.add_argument("--monotonic-loss-weight", type=float, default=None)
     parser.add_argument("--temporal-aux-loss-weight", type=float, default=None)
     return parser.parse_args()
@@ -508,6 +509,8 @@ def main() -> None:
         config.stage2.monotonic_loss_weight = args.monotonic_loss_weight
     if args.temporal_aux_loss_weight is not None:
         config.stage2.temporal_aux_loss_weight = args.temporal_aux_loss_weight
+    if args.early_stopping_patience is not None:
+        config.stage2.early_stopping_patience = args.early_stopping_patience
     config.postprocess.prediction_mode = "peak" if config.stage2.target_mode == "onset" else "cumulative"
     print_device_diagnostics()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -521,6 +524,7 @@ def main() -> None:
                 f"lambda_video={args.lambda_video}",
                 f"monotonic_weight={config.stage2.monotonic_loss_weight}",
                 f"temporal_aux_weight={config.stage2.temporal_aux_loss_weight}",
+                f"early_stopping_patience={config.stage2.early_stopping_patience}",
                 f"batch_size={config.stage2.batch_size}",
                 f"max_steps={config.stage2.max_steps_per_sample}",
                 f"window_stride={config.stage2.window_stride_steps}",
@@ -551,6 +555,8 @@ def main() -> None:
 
     best_f1 = -1.0
     best_metrics: dict[str, float] = {}
+    best_epoch = 0
+    validations_without_improvement = 0
     val_annotations: list[VideoAnnotation] = []
     if config.paths.val_videos_dir.exists():
         val_annotations = build_split(
@@ -617,6 +623,8 @@ def main() -> None:
         if metrics["f1_score"] > best_f1:
             best_f1 = metrics["f1_score"]
             best_metrics = metrics
+            best_epoch = epoch
+            validations_without_improvement = 0
             payload = checkpoint_payload(
                 model_state_dict=model.state_dict(),
                 config=config,
@@ -634,9 +642,27 @@ def main() -> None:
                 },
             )
             save_checkpoint(config.paths.checkpoints_dir / args.output_name, payload)
+        else:
+            validations_without_improvement += 1
+
+        patience = config.stage2.early_stopping_patience
+        if patience is not None and patience >= 0 and validations_without_improvement >= patience:
+            print(
+                " ".join(
+                    [
+                        log_prefix(args.run_name),
+                        "early_stopping=triggered",
+                        f"epoch={epoch}",
+                        f"best_epoch={best_epoch}",
+                        f"best_f1={best_f1:.4f}",
+                        f"patience={patience}",
+                    ]
+                )
+            )
+            break
 
     if best_metrics:
-        print(f"{log_prefix(args.run_name)} best_f1={best_metrics['f1_score']:.4f}")
+        print(f"{log_prefix(args.run_name)} best_epoch={best_epoch} best_f1={best_metrics['f1_score']:.4f}")
     else:
         payload = checkpoint_payload(
             model_state_dict=model.state_dict(),

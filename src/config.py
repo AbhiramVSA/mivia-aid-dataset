@@ -63,6 +63,7 @@ class Stage1TrainConfig:
 class Stage2TrainConfig:
     batch_size: int = 1
     num_epochs: int = 20
+    early_stopping_patience: int | None = 4
     warmup_epochs: int = 2
     backbone_lr: float = 1e-5
     head_lr: float = 1e-4

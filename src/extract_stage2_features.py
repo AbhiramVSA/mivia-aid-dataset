@@ -55,6 +55,21 @@ def load_encoder(config: ExperimentConfig, checkpoint_path: Path | None, device:
     return encoder
 
 
+def update_summary_from_bundle(
+    bundle: dict,
+    *,
+    temporal_bin_hist: torch.Tensor,
+) -> tuple[int, int]:
+    is_positive = bool(bundle["source_positive"].item() > 0.5)
+    if is_positive:
+        valid_bins = bundle["temporal_bin_targets"]
+        valid_bins = valid_bins[valid_bins >= 0]
+        if valid_bins.numel() > 0:
+            temporal_bin_hist += torch.bincount(valid_bins, minlength=4).to(dtype=torch.long)
+        return 1, 0
+    return 0, 1
+
+
 @torch.no_grad()
 def encode_video(
     annotation: VideoAnnotation,
@@ -171,6 +186,12 @@ def main() -> None:
             existing = torch.load(output_path, map_location="cpu", weights_only=False)
             if existing.get("cache_schema_version") == CACHE_SCHEMA_VERSION and "temporal_bin_targets" in existing:
                 skipped += 1
+                positive_delta, negative_delta = update_summary_from_bundle(
+                    existing,
+                    temporal_bin_hist=temporal_bin_hist,
+                )
+                positive_videos += positive_delta
+                negative_videos += negative_delta
                 print(f"[cache] skip {index}/{len(records)} {annotation.split}/{annotation.video_id}")
                 continue
             print(f"[cache] refresh {index}/{len(records)} {annotation.split}/{annotation.video_id} reason=schema")
@@ -184,14 +205,12 @@ def main() -> None:
         )
         torch.save(bundle, output_path)
         extracted += 1
-        if annotation.is_positive and annotation.start_s is not None:
-            positive_videos += 1
-            valid_bins = bundle["temporal_bin_targets"]
-            valid_bins = valid_bins[valid_bins >= 0]
-            if valid_bins.numel() > 0:
-                temporal_bin_hist += torch.bincount(valid_bins, minlength=4).to(dtype=torch.long)
-        else:
-            negative_videos += 1
+        positive_delta, negative_delta = update_summary_from_bundle(
+            bundle,
+            temporal_bin_hist=temporal_bin_hist,
+        )
+        positive_videos += positive_delta
+        negative_videos += negative_delta
         print(
             f"[cache] done {index}/{len(records)} {annotation.split}/{annotation.video_id} "
             f"steps={bundle['features'].shape[0]}"

@@ -80,12 +80,25 @@ class CachedSequenceDataset(Dataset[CachedSequenceSample]):
         self.hard_negative_multiplier = hard_negative_multiplier
         self.cache_paths = sorted(cache_dir.glob("*.pt"))
         self.annotation_metas: list[CachedAnnotationMeta] = []
+        self._temporal_bin_hist = torch.zeros(4, dtype=torch.long)
         self.records = self._build_window_records()
         self.total_window_steps = sum(record.step_end - record.step_start for record in self.records)
         self.max_window_steps = max((record.step_end - record.step_start for record in self.records), default=0)
         self.sample_weights = self._build_sample_weights()
         self.hard_negative_window_count = sum(
             1 for record in self.records if record.cache_path.stem in self.hard_negative_video_ids
+        )
+        total_weight = float(self.sample_weights.sum().item()) if self.sample_weights.numel() > 0 else 0.0
+        hard_negative_weight = float(
+            self.sample_weights[
+                torch.tensor(
+                    [record.cache_path.stem in self.hard_negative_video_ids for record in self.records],
+                    dtype=torch.bool,
+                )
+            ].sum().item()
+        ) if self.records else 0.0
+        self.hard_negative_sampling_mass_fraction = (
+            hard_negative_weight / total_weight if total_weight > 0 else 0.0
         )
 
     def _build_window_records(self) -> list[CachedWindowRecord]:
@@ -99,6 +112,10 @@ class CachedSequenceDataset(Dataset[CachedSequenceSample]):
                     start_s=float(bundle["ground_truth_start_s"]) if bundle["ground_truth_start_s"] is not None else None,
                 )
             )
+            bins = bundle["temporal_bin_targets"]
+            bins = bins[bins >= 0]
+            if bins.numel() > 0:
+                self._temporal_bin_hist += torch.bincount(bins, minlength=4).to(dtype=torch.long)
             total_steps = int(bundle["features"].shape[0])
             if total_steps == 0:
                 continue
@@ -144,14 +161,7 @@ class CachedSequenceDataset(Dataset[CachedSequenceSample]):
 
     @property
     def temporal_bin_hist(self) -> list[int]:
-        hist = torch.zeros(4, dtype=torch.long)
-        for cache_path in self.cache_paths:
-            bundle = load_feature_cache(cache_path)
-            bins = bundle["temporal_bin_targets"]
-            bins = bins[bins >= 0]
-            if bins.numel() > 0:
-                hist += torch.bincount(bins, minlength=4).to(dtype=torch.long)
-        return hist.tolist()
+        return self._temporal_bin_hist.tolist()
 
     def __getitem__(self, index: int) -> CachedSequenceSample:
         record = self.records[index]

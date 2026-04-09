@@ -37,6 +37,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--num-epochs", type=int, default=20)
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--validate-every", type=int, default=1)
+    parser.add_argument("--early-stopping-patience", type=int, default=None)
     parser.add_argument("--monotonic-loss-weight", type=float, default=None)
     parser.add_argument("--temporal-aux-loss-weight", type=float, default=None)
     parser.add_argument("--disable-video-balanced-sampling", action="store_true")
@@ -110,13 +111,14 @@ def print_dataset_summary(name: str, dataset: CachedSequenceDataset, loader: Dat
     )
     if name == "train":
         total_windows = max(1, len(dataset))
-        weighted_fraction = dataset.hard_negative_window_count / float(total_windows)
+        raw_fraction = dataset.hard_negative_window_count / float(total_windows)
         print(
             " ".join(
                 [
                     f"{name}_hard_negative_video_count={len(dataset.hard_negative_video_ids)}",
                     f"{name}_hard_negative_window_count={dataset.hard_negative_window_count}",
-                    f"{name}_hard_negative_window_fraction={weighted_fraction:.4f}",
+                    f"{name}_hard_negative_window_fraction={raw_fraction:.4f}",
+                    f"{name}_hard_negative_sampling_mass_fraction={dataset.hard_negative_sampling_mass_fraction:.4f}",
                     f"{name}_temporal_bin_hist={dataset.temporal_bin_hist}",
                 ]
             )
@@ -315,6 +317,8 @@ def main() -> None:
         config.stage2.temporal_aux_loss_weight = args.temporal_aux_loss_weight
     if args.hard_negative_multiplier is not None:
         config.stage2.hard_negative_multiplier = args.hard_negative_multiplier
+    if args.early_stopping_patience is not None:
+        config.stage2.early_stopping_patience = args.early_stopping_patience
     config.postprocess.prediction_mode = "peak" if args.target_mode == "onset" else "cumulative"
     print_device_diagnostics()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -331,6 +335,7 @@ def main() -> None:
                 f"temporal_aux_weight={config.stage2.temporal_aux_loss_weight}",
                 f"video_balanced_sampling={not args.disable_video_balanced_sampling}",
                 f"hard_negative_multiplier={config.stage2.hard_negative_multiplier}",
+                f"early_stopping_patience={config.stage2.early_stopping_patience}",
                 f"batch_size={config.stage2.batch_size}",
                 f"max_steps={config.stage2.max_steps_per_sample}",
                 f"window_stride={config.stage2.window_stride_steps}",
@@ -356,6 +361,8 @@ def main() -> None:
 
     best_f1 = -1.0
     best_metrics: dict[str, float] = {}
+    best_epoch = 0
+    validations_without_improvement = 0
     for epoch in range(1, config.stage2.num_epochs + 1):
         train_loss = train_one_epoch(
             model=model,
@@ -408,6 +415,8 @@ def main() -> None:
         if metrics["f1_score"] > best_f1:
             best_f1 = metrics["f1_score"]
             best_metrics = metrics
+            best_epoch = epoch
+            validations_without_improvement = 0
             payload = checkpoint_payload(
                 model_state_dict=model.state_dict(),
                 config=config,
@@ -425,8 +434,26 @@ def main() -> None:
                 },
             )
             save_checkpoint(config.paths.checkpoints_dir / args.output_name, payload)
+        else:
+            validations_without_improvement += 1
+
+        patience = config.stage2.early_stopping_patience
+        if patience is not None and patience >= 0 and validations_without_improvement >= patience:
+            print(
+                " ".join(
+                    [
+                        log_prefix(args.run_name),
+                        f"early_stopping=triggered",
+                        f"epoch={epoch}",
+                        f"best_epoch={best_epoch}",
+                        f"best_f1={best_f1:.4f}",
+                        f"patience={patience}",
+                    ]
+                )
+            )
+            break
     if best_metrics:
-        print(f"{log_prefix(args.run_name)} best_f1={best_metrics['f1_score']:.4f}")
+        print(f"{log_prefix(args.run_name)} best_epoch={best_epoch} best_f1={best_metrics['f1_score']:.4f}")
 
 
 if __name__ == "__main__":
