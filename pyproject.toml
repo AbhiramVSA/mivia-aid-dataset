@@ -23,6 +23,7 @@ aid-stage1 = "src.train_stage1:main"
 aid-stage2 = "src.train_stage2:main"
 aid-stage2-cached = "src.train_stage2_cached:main"
 aid-extract-features = "src.extract_stage2_features:main"
+aid-mine-hard-negatives = "src.mine_hard_negatives:main"
 aid-eval = "src.eval:main"
 aid-export-submission = "scripts.export_submission:main"
 

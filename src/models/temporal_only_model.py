@@ -35,5 +35,7 @@ class TemporalOnlyModel(nn.Module):
         else:
             raise ValueError(f"Unsupported temporal_model: {temporal_model}")
 
-    def forward(self, features: torch.Tensor, step_mask: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, features: torch.Tensor, step_mask: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         return self.temporal_head(features, step_mask=step_mask)

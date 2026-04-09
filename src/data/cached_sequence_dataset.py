@@ -6,6 +6,8 @@ from pathlib import Path
 import torch
 from torch.utils.data import Dataset
 
+from src.data.temporal_targets import TEMPORAL_BIN_IGNORE_INDEX
+
 
 @dataclass(slots=True)
 class CachedSequenceSample:
@@ -14,6 +16,7 @@ class CachedSequenceSample:
     timestamps_s: torch.Tensor
     step_targets: torch.Tensor
     onset_targets: torch.Tensor
+    temporal_bin_targets: torch.Tensor
     step_mask: torch.Tensor
     video_target: torch.Tensor
     source_positive: torch.Tensor
@@ -26,6 +29,7 @@ class CachedSequenceBatch:
     timestamps_s: torch.Tensor
     step_targets: torch.Tensor
     onset_targets: torch.Tensor
+    temporal_bin_targets: torch.Tensor
     step_mask: torch.Tensor
     video_target: torch.Tensor
     source_positive: torch.Tensor
@@ -50,10 +54,19 @@ def load_feature_cache(cache_path: Path) -> dict:
 
 
 class CachedSequenceDataset(Dataset[CachedSequenceSample]):
-    def __init__(self, cache_dir: Path, max_steps: int | None = None, window_stride: int | None = None) -> None:
+    def __init__(
+        self,
+        cache_dir: Path,
+        max_steps: int | None = None,
+        window_stride: int | None = None,
+        hard_negative_video_ids: set[str] | None = None,
+        hard_negative_multiplier: float = 2.0,
+    ) -> None:
         self.cache_dir = cache_dir
         self.max_steps = max_steps
         self.window_stride = window_stride or max_steps
+        self.hard_negative_video_ids = hard_negative_video_ids or set()
+        self.hard_negative_multiplier = hard_negative_multiplier
         self.cache_paths = sorted(cache_dir.glob("*.pt"))
         self.annotation_metas: list[CachedAnnotationMeta] = []
         self.records = self._build_window_records()
@@ -94,10 +107,13 @@ class CachedSequenceDataset(Dataset[CachedSequenceSample]):
         windows_per_video: dict[Path, int] = {}
         for record in self.records:
             windows_per_video[record.cache_path] = windows_per_video.get(record.cache_path, 0) + 1
-        return torch.tensor(
-            [1.0 / float(windows_per_video[record.cache_path]) for record in self.records],
-            dtype=torch.float32,
-        )
+        weights: list[float] = []
+        for record in self.records:
+            base = 1.0 / float(windows_per_video[record.cache_path])
+            if record.cache_path.stem in self.hard_negative_video_ids:
+                base *= self.hard_negative_multiplier
+            weights.append(base)
+        return torch.tensor(weights, dtype=torch.float32)
 
     def __len__(self) -> int:
         return len(self.records)
@@ -120,6 +136,7 @@ class CachedSequenceDataset(Dataset[CachedSequenceSample]):
         features = bundle["features"][sl]
         step_targets = bundle["step_targets"][sl]
         onset_targets = bundle["onset_targets"][sl]
+        temporal_bin_targets = bundle["temporal_bin_targets"][sl]
         step_mask = torch.ones(features.shape[0], dtype=torch.bool)
         return CachedSequenceSample(
             video_id=str(bundle["video_id"]),
@@ -127,6 +144,7 @@ class CachedSequenceDataset(Dataset[CachedSequenceSample]):
             timestamps_s=timestamps_s,
             step_targets=step_targets,
             onset_targets=onset_targets,
+            temporal_bin_targets=temporal_bin_targets,
             step_mask=step_mask,
             video_target=bundle["video_target"].clone(),
             source_positive=bundle["source_positive"].clone(),
@@ -144,6 +162,7 @@ def collate_cached_sequence_batch(samples: list[CachedSequenceSample]) -> Cached
     timestamps_s = torch.zeros((batch_size, max_steps), dtype=torch.float32)
     step_targets = torch.zeros((batch_size, max_steps), dtype=torch.float32)
     onset_targets = torch.zeros((batch_size, max_steps), dtype=torch.float32)
+    temporal_bin_targets = torch.full((batch_size, max_steps), TEMPORAL_BIN_IGNORE_INDEX, dtype=torch.long)
     step_mask = torch.zeros((batch_size, max_steps), dtype=torch.bool)
     video_target = torch.stack([sample.video_target for sample in samples], dim=0)
     source_positive = torch.stack([sample.source_positive for sample in samples], dim=0)
@@ -155,6 +174,7 @@ def collate_cached_sequence_batch(samples: list[CachedSequenceSample]) -> Cached
         timestamps_s[batch_index, :num_steps] = sample.timestamps_s
         step_targets[batch_index, :num_steps] = sample.step_targets
         onset_targets[batch_index, :num_steps] = sample.onset_targets
+        temporal_bin_targets[batch_index, :num_steps] = sample.temporal_bin_targets
         step_mask[batch_index, :num_steps] = sample.step_mask
         video_ids.append(sample.video_id)
 
@@ -164,6 +184,7 @@ def collate_cached_sequence_batch(samples: list[CachedSequenceSample]) -> Cached
         timestamps_s=timestamps_s,
         step_targets=step_targets,
         onset_targets=onset_targets,
+        temporal_bin_targets=temporal_bin_targets,
         step_mask=step_mask,
         video_target=video_target,
         source_positive=source_positive,

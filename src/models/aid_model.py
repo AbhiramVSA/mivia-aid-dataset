@@ -39,7 +39,9 @@ class AIDTemporalModel(nn.Module):
         else:
             raise ValueError(f"Unsupported temporal_model: {temporal_model}")
 
-    def forward(self, clips: torch.Tensor, step_mask: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, clips: torch.Tensor, step_mask: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """Args:
         clips: [B, T, C, F, H, W]
         """

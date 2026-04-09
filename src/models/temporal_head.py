@@ -39,20 +39,24 @@ class TemporalConvHead(nn.Module):
         )
         self.step_classifier = nn.Linear(c3, 1)
         self.video_classifier = nn.Linear(c3, 1)
+        self.temporal_bin_classifier = nn.Linear(c3, 4)
 
-    def forward(self, features: torch.Tensor, step_mask: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, features: torch.Tensor, step_mask: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if features.ndim != 3:
             raise ValueError(f"Expected features [B, T, D], got {tuple(features.shape)}")
         x = features.transpose(1, 2)
         x = self.net(x).transpose(1, 2)
         step_logits = self.step_classifier(x).squeeze(-1)
+        temporal_bin_logits = self.temporal_bin_classifier(x)
         if step_mask is None:
             pooled = x.mean(dim=1)
         else:
             valid = step_mask.unsqueeze(-1).to(dtype=x.dtype)
             pooled = (x * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1.0)
         video_logits = self.video_classifier(pooled).squeeze(-1)
-        return step_logits, video_logits
+        return step_logits, video_logits, temporal_bin_logits
 
 
 class TemporalTransformerHead(nn.Module):
@@ -81,8 +85,11 @@ class TemporalTransformerHead(nn.Module):
         self.output_norm = nn.LayerNorm(hidden_size)
         self.step_classifier = nn.Linear(hidden_size, 1)
         self.video_classifier = nn.Linear(hidden_size, 1)
+        self.temporal_bin_classifier = nn.Linear(hidden_size, 4)
 
-    def forward(self, features: torch.Tensor, step_mask: torch.Tensor | None = None) -> tuple[torch.Tensor, torch.Tensor]:
+    def forward(
+        self, features: torch.Tensor, step_mask: torch.Tensor | None = None
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         if features.ndim != 3:
             raise ValueError(f"Expected features [B, T, D], got {tuple(features.shape)}")
         x = self.input_norm(features)
@@ -98,6 +105,7 @@ class TemporalTransformerHead(nn.Module):
         x = self.transformer(x, mask=causal_mask, src_key_padding_mask=padding_mask)
         x = self.output_norm(x)
         step_logits = self.step_classifier(x).squeeze(-1)
+        temporal_bin_logits = self.temporal_bin_classifier(x)
 
         if step_mask is None:
             pooled = x.mean(dim=1)
@@ -105,4 +113,4 @@ class TemporalTransformerHead(nn.Module):
             valid = step_mask.unsqueeze(-1).to(dtype=x.dtype)
             pooled = (x * valid).sum(dim=1) / valid.sum(dim=1).clamp_min(1.0)
         video_logits = self.video_classifier(pooled).squeeze(-1)
-        return step_logits, video_logits
+        return step_logits, video_logits, temporal_bin_logits

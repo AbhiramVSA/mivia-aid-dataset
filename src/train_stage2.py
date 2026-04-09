@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from src.config import ExperimentConfig
+from src.data.temporal_targets import TEMPORAL_BIN_IGNORE_INDEX
 from src.data.annotations import VideoAnnotation, load_annotations
 from src.data.sequence_dataset import Stage2SequenceDataset, collate_sequence_batch
 from src.models.aid_model import AIDTemporalModel
@@ -37,6 +38,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--validate-every", type=int, default=1)
     parser.add_argument("--monotonic-loss-weight", type=float, default=None)
+    parser.add_argument("--temporal-aux-loss-weight", type=float, default=None)
     return parser.parse_args()
 
 
@@ -99,6 +101,7 @@ def make_dataloaders(
         max_steps=config.stage2.max_steps_per_sample,
         window_stride=config.stage2.window_stride_steps,
         onset_sigma_s=config.stage2.onset_sigma_seconds if config.stage2.target_mode == "onset" else None,
+        temporal_distance_bin_edges_s=config.stage2.temporal_distance_bin_edges_s,
     )
     train_loader = DataLoader(
         train_dataset,
@@ -126,6 +129,7 @@ def make_dataloaders(
             max_steps=config.stage2.max_steps_per_sample,
             window_stride=config.stage2.window_stride_steps,
             onset_sigma_s=config.stage2.onset_sigma_seconds if config.stage2.target_mode == "onset" else None,
+            temporal_distance_bin_edges_s=config.stage2.temporal_distance_bin_edges_s,
         )
         val_loader = DataLoader(
             val_dataset,
@@ -177,12 +181,15 @@ def maybe_load_init_checkpoint(model: AIDTemporalModel, checkpoint_path: Path | 
 def compute_stage2_loss(
     step_logits: torch.Tensor,
     video_logits: torch.Tensor,
+    temporal_bin_logits: torch.Tensor | None,
     step_targets: torch.Tensor,
+    temporal_bin_targets: torch.Tensor | None,
     step_mask: torch.Tensor,
     video_target: torch.Tensor,
     lambda_video: float,
     target_mode: str,
     monotonic_loss_weight: float,
+    temporal_aux_loss_weight: float,
 ) -> torch.Tensor:
     step_loss = F.binary_cross_entropy_with_logits(step_logits, step_targets, reduction="none")
     valid = step_mask.bool()
@@ -196,7 +203,23 @@ def compute_stage2_loss(
         if pair_valid.any():
             downward = torch.relu(step_probs[:, :-1] - step_probs[:, 1:])
             monotonic_loss = downward[pair_valid].mean()
-    return step_loss_mean + lambda_video * video_loss + monotonic_loss_weight * monotonic_loss
+    temporal_aux_loss = step_logits.new_tensor(0.0)
+    if temporal_bin_logits is not None and temporal_bin_targets is not None and temporal_aux_loss_weight > 0:
+        aux_loss = F.cross_entropy(
+            temporal_bin_logits.reshape(-1, temporal_bin_logits.shape[-1]),
+            temporal_bin_targets.reshape(-1),
+            ignore_index=TEMPORAL_BIN_IGNORE_INDEX,
+            reduction="none",
+        )
+        valid_aux = (temporal_bin_targets.reshape(-1) != TEMPORAL_BIN_IGNORE_INDEX).to(dtype=aux_loss.dtype)
+        if valid_aux.any():
+            temporal_aux_loss = (aux_loss * valid_aux).sum() / valid_aux.sum().clamp_min(1.0)
+    return (
+        step_loss_mean
+        + lambda_video * video_loss
+        + monotonic_loss_weight * monotonic_loss
+        + temporal_aux_loss_weight * temporal_aux_loss
+    )
 
 
 def sweep_postprocess_thresholds(
@@ -307,6 +330,7 @@ def train_one_epoch(
             if target_mode == "onset"
             else batch.step_targets.to(device, non_blocking=True)
         )
+        temporal_bin_targets = batch.temporal_bin_targets.to(device, non_blocking=True)
         step_mask = batch.step_mask.to(device, non_blocking=True)
         video_target = batch.video_target.to(device, non_blocking=True)
 
@@ -315,16 +339,19 @@ def train_one_epoch(
             torch.autocast(device_type="cuda", enabled=True) if amp and device.type == "cuda" else nullcontext()
         )
         with autocast_context:
-            step_logits, video_logits = model(clip_tensor, step_mask=step_mask)
+            step_logits, video_logits, temporal_bin_logits = model(clip_tensor, step_mask=step_mask)
             loss = compute_stage2_loss(
                 step_logits=step_logits,
                 video_logits=video_logits,
+                temporal_bin_logits=temporal_bin_logits,
                 step_targets=selected_targets,
+                temporal_bin_targets=temporal_bin_targets,
                 step_mask=step_mask,
                 video_target=video_target,
                 lambda_video=lambda_video,
                 target_mode=target_mode,
                 monotonic_loss_weight=config.stage2.monotonic_loss_weight,
+                temporal_aux_loss_weight=config.stage2.temporal_aux_loss_weight,
             )
         loss.backward()
         optimizer.step()
@@ -389,19 +416,23 @@ def validate(
             if target_mode == "onset"
             else batch.step_targets.to(device, non_blocking=True)
         )
+        temporal_bin_targets = batch.temporal_bin_targets.to(device, non_blocking=True)
         step_mask = batch.step_mask.to(device, non_blocking=True)
         video_target = batch.video_target.to(device, non_blocking=True)
 
-        step_logits, video_logits = model(clip_tensor, step_mask=step_mask)
+        step_logits, video_logits, temporal_bin_logits = model(clip_tensor, step_mask=step_mask)
         loss = compute_stage2_loss(
             step_logits=step_logits,
             video_logits=video_logits,
+            temporal_bin_logits=temporal_bin_logits,
             step_targets=selected_targets,
+            temporal_bin_targets=temporal_bin_targets,
             step_mask=step_mask,
             video_target=video_target,
             lambda_video=lambda_video,
             target_mode=target_mode,
             monotonic_loss_weight=config.stage2.monotonic_loss_weight,
+            temporal_aux_loss_weight=config.stage2.temporal_aux_loss_weight,
         )
         total_loss += float(loss.item())
         num_batches += 1
@@ -475,6 +506,8 @@ def main() -> None:
         config.stage2.num_epochs = args.num_epochs
     if args.monotonic_loss_weight is not None:
         config.stage2.monotonic_loss_weight = args.monotonic_loss_weight
+    if args.temporal_aux_loss_weight is not None:
+        config.stage2.temporal_aux_loss_weight = args.temporal_aux_loss_weight
     config.postprocess.prediction_mode = "peak" if config.stage2.target_mode == "onset" else "cumulative"
     print_device_diagnostics()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -487,6 +520,7 @@ def main() -> None:
                 f"target_mode={config.stage2.target_mode}",
                 f"lambda_video={args.lambda_video}",
                 f"monotonic_weight={config.stage2.monotonic_loss_weight}",
+                f"temporal_aux_weight={config.stage2.temporal_aux_loss_weight}",
                 f"batch_size={config.stage2.batch_size}",
                 f"max_steps={config.stage2.max_steps_per_sample}",
                 f"window_stride={config.stage2.window_stride_steps}",

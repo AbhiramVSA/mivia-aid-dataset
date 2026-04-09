@@ -76,6 +76,9 @@ class Stage2TrainConfig:
     onset_sigma_seconds: float = 1.0
     target_mode: str = "cumulative"
     monotonic_loss_weight: float = 0.1
+    temporal_aux_loss_weight: float = 0.2
+    temporal_distance_bin_edges_s: tuple[float, float, float] = (-5.0, 0.0, 5.0)
+    hard_negative_multiplier: float = 2.0
 
 
 @dataclass(slots=True)

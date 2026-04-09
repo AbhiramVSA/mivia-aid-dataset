@@ -145,7 +145,7 @@ def infer_single_video(video_path: Path, checkpoint_path: Path | None = None) ->
             for _, end_idx in window_spans
         ]
         clip_tensor = preprocess_clip_batch(clips, backbone_name=config.model.backbone_name).unsqueeze(0).to(device)
-        step_logits, video_logits = model(clip_tensor)
+        step_logits, video_logits, _ = model(clip_tensor)
         step_scores = torch.sigmoid(step_logits[0]).cpu().tolist()
         video_scores.append(float(torch.sigmoid(video_logits[0]).item()))
         timestamps = [(end_idx - 1) / float(config.video.sample_fps) for _, end_idx in window_spans]

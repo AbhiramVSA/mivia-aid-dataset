@@ -38,17 +38,27 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--validate-every", type=int, default=1)
     parser.add_argument("--monotonic-loss-weight", type=float, default=None)
+    parser.add_argument("--temporal-aux-loss-weight", type=float, default=None)
     parser.add_argument("--disable-video-balanced-sampling", action="store_true")
+    parser.add_argument("--hard-negative-ids-path", type=Path, default=None)
+    parser.add_argument("--hard-negative-multiplier", type=float, default=None)
     return parser.parse_args()
 
 
 def make_dataloaders(
     config: ExperimentConfig, args: argparse.Namespace
 ) -> tuple[CachedSequenceDataset, DataLoader, CachedSequenceDataset, DataLoader]:
+    hard_negative_video_ids: set[str] = set()
+    if args.hard_negative_ids_path is not None and args.hard_negative_ids_path.exists():
+        hard_negative_video_ids = {
+            line.strip() for line in args.hard_negative_ids_path.read_text(encoding="utf-8").splitlines() if line.strip()
+        }
     train_dataset = CachedSequenceDataset(
         cache_dir=args.cache_root / "train",
         max_steps=config.stage2.max_steps_per_sample,
         window_stride=config.stage2.window_stride_steps,
+        hard_negative_video_ids=hard_negative_video_ids,
+        hard_negative_multiplier=config.stage2.hard_negative_multiplier,
     )
     val_dataset = CachedSequenceDataset(
         cache_dir=args.cache_root / "val",
@@ -127,6 +137,7 @@ def train_one_epoch(
             if target_mode == "onset"
             else batch.step_targets.to(device, non_blocking=True)
         )
+        temporal_bin_targets = batch.temporal_bin_targets.to(device, non_blocking=True)
         step_mask = batch.step_mask.to(device, non_blocking=True)
         video_target = batch.video_target.to(device, non_blocking=True)
 
@@ -135,16 +146,19 @@ def train_one_epoch(
             torch.autocast(device_type="cuda", enabled=True) if amp and device.type == "cuda" else nullcontext()
         )
         with autocast_context:
-            step_logits, video_logits = model(features, step_mask=step_mask)
+            step_logits, video_logits, temporal_bin_logits = model(features, step_mask=step_mask)
             loss = compute_stage2_loss(
                 step_logits=step_logits,
                 video_logits=video_logits,
+                temporal_bin_logits=temporal_bin_logits,
                 step_targets=selected_targets,
+                temporal_bin_targets=temporal_bin_targets,
                 step_mask=step_mask,
                 video_target=video_target,
                 lambda_video=lambda_video,
                 target_mode=target_mode,
                 monotonic_loss_weight=config.stage2.monotonic_loss_weight,
+                temporal_aux_loss_weight=config.stage2.temporal_aux_loss_weight,
             )
         loss.backward()
         optimizer.step()
@@ -205,18 +219,22 @@ def validate(
             if target_mode == "onset"
             else batch.step_targets.to(device, non_blocking=True)
         )
+        temporal_bin_targets = batch.temporal_bin_targets.to(device, non_blocking=True)
         step_mask = batch.step_mask.to(device, non_blocking=True)
         video_target = batch.video_target.to(device, non_blocking=True)
-        step_logits, video_logits = model(features, step_mask=step_mask)
+        step_logits, video_logits, temporal_bin_logits = model(features, step_mask=step_mask)
         loss = compute_stage2_loss(
             step_logits=step_logits,
             video_logits=video_logits,
+            temporal_bin_logits=temporal_bin_logits,
             step_targets=selected_targets,
+            temporal_bin_targets=temporal_bin_targets,
             step_mask=step_mask,
             video_target=video_target,
             lambda_video=lambda_video,
             target_mode=target_mode,
             monotonic_loss_weight=config.stage2.monotonic_loss_weight,
+            temporal_aux_loss_weight=config.stage2.temporal_aux_loss_weight,
         )
         total_loss += float(loss.item())
         num_batches += 1
@@ -278,6 +296,10 @@ def main() -> None:
     config.model.temporal_model = args.temporal_model
     if args.monotonic_loss_weight is not None:
         config.stage2.monotonic_loss_weight = args.monotonic_loss_weight
+    if args.temporal_aux_loss_weight is not None:
+        config.stage2.temporal_aux_loss_weight = args.temporal_aux_loss_weight
+    if args.hard_negative_multiplier is not None:
+        config.stage2.hard_negative_multiplier = args.hard_negative_multiplier
     config.postprocess.prediction_mode = "peak" if args.target_mode == "onset" else "cumulative"
     print_device_diagnostics()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -291,7 +313,9 @@ def main() -> None:
                 f"target_mode={config.stage2.target_mode}",
                 f"lambda_video={args.lambda_video}",
                 f"monotonic_weight={config.stage2.monotonic_loss_weight}",
+                f"temporal_aux_weight={config.stage2.temporal_aux_loss_weight}",
                 f"video_balanced_sampling={not args.disable_video_balanced_sampling}",
+                f"hard_negative_multiplier={config.stage2.hard_negative_multiplier}",
                 f"batch_size={config.stage2.batch_size}",
                 f"max_steps={config.stage2.max_steps_per_sample}",
                 f"window_stride={config.stage2.window_stride_steps}",

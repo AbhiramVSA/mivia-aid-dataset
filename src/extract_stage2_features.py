@@ -7,6 +7,7 @@ import torch
 
 from src.config import ExperimentConfig
 from src.data.annotations import VideoAnnotation, load_annotations
+from src.data.temporal_targets import TEMPORAL_BIN_IGNORE_INDEX, build_temporal_distance_bins
 from src.data.video_decode import (
     build_causal_clip_indices,
     decode_sampled_frame_window,
@@ -72,6 +73,7 @@ def encode_video(
             "timestamps_s": empty_time,
             "step_targets": empty_time.clone(),
             "onset_targets": empty_time.clone(),
+            "temporal_bin_targets": torch.empty((0,), dtype=torch.long),
             "ground_truth_start_s": None,
             "video_target": torch.tensor(0.0, dtype=torch.float32),
             "source_positive": torch.tensor(float(annotation.is_positive), dtype=torch.float32),
@@ -114,10 +116,16 @@ def encode_video(
         step_targets = (timestamps_s >= float(annotation.start_s)).to(dtype=torch.float32)
         distance = timestamps_s - float(annotation.start_s)
         onset_targets = torch.exp(-0.5 * (distance / float(config.stage2.onset_sigma_seconds)) ** 2)
+        temporal_bin_targets = build_temporal_distance_bins(
+            timestamps_s,
+            float(annotation.start_s),
+            bin_edges_s=config.stage2.temporal_distance_bin_edges_s,
+        )
         video_target = torch.tensor(1.0, dtype=torch.float32)
     else:
         step_targets = torch.zeros_like(timestamps_s)
         onset_targets = torch.zeros_like(timestamps_s)
+        temporal_bin_targets = torch.full_like(timestamps_s, TEMPORAL_BIN_IGNORE_INDEX, dtype=torch.long)
         video_target = torch.tensor(0.0, dtype=torch.float32)
     return {
         "video_id": annotation.video_id,
@@ -125,6 +133,7 @@ def encode_video(
         "timestamps_s": timestamps_s,
         "step_targets": step_targets,
         "onset_targets": onset_targets,
+        "temporal_bin_targets": temporal_bin_targets,
         "ground_truth_start_s": annotation.start_s,
         "video_target": video_target,
         "source_positive": torch.tensor(float(annotation.is_positive), dtype=torch.float32),
