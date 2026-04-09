@@ -64,10 +64,13 @@ class Stage2TrainConfig:
     batch_size: int = 1
     num_epochs: int = 20
     early_stopping_patience: int | None = 4
+    seed: int = 1337
     warmup_epochs: int = 2
     backbone_lr: float = 1e-5
     head_lr: float = 1e-4
     weight_decay: float = 0.05
+    scheduler_name: str = "cosine"
+    min_lr_ratio: float = 0.1
     num_workers: int = 2
     grad_accum_steps: int = 1
     amp: bool = True

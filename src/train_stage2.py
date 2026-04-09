@@ -18,6 +18,7 @@ from src.models.aid_model import AIDTemporalModel
 from src.utils.checkpoint import checkpoint_payload, load_checkpoint, save_checkpoint
 from src.utils.metrics import PredictionRecord, compute_contest_metrics
 from src.utils.postprocess import predict_start_time
+from src.utils.training import build_cosine_warmup_scheduler, make_generator, make_worker_init_fn, seed_everything
 
 
 def parse_args() -> argparse.Namespace:
@@ -38,6 +39,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--validate-every", type=int, default=1)
     parser.add_argument("--early-stopping-patience", type=int, default=None)
+    parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--scheduler", type=str, choices=("cosine", "none"), default=None)
     parser.add_argument("--monotonic-loss-weight", type=float, default=None)
     parser.add_argument("--temporal-aux-loss-weight", type=float, default=None)
     return parser.parse_args()
@@ -89,6 +92,8 @@ def build_split(
 def make_dataloaders(
     config: ExperimentConfig, args: argparse.Namespace
 ) -> tuple[Stage2SequenceDataset, DataLoader, Stage2SequenceDataset | None, DataLoader | None]:
+    generator = make_generator(config.stage2.seed)
+    worker_init_fn = make_worker_init_fn(config.stage2.seed)
     train_records = build_split(
         csv_path=config.paths.train_csv,
         videos_dir=config.paths.train_videos_dir,
@@ -111,6 +116,8 @@ def make_dataloaders(
         num_workers=config.stage2.num_workers,
         pin_memory=True,
         persistent_workers=config.stage2.num_workers > 0,
+        worker_init_fn=worker_init_fn,
+        generator=generator,
         collate_fn=collate_sequence_batch,
     )
 
@@ -139,6 +146,7 @@ def make_dataloaders(
             num_workers=config.stage2.num_workers,
             pin_memory=True,
             persistent_workers=config.stage2.num_workers > 0,
+            worker_init_fn=worker_init_fn,
             collate_fn=collate_sequence_batch,
         )
     return train_dataset, train_loader, val_dataset, val_loader
@@ -168,6 +176,20 @@ def build_optimizer(model: AIDTemporalModel, config: ExperimentConfig) -> torch.
             {"params": head_params, "lr": config.stage2.head_lr},
         ],
         weight_decay=config.stage2.weight_decay,
+    )
+
+
+def build_scheduler(
+    optimizer: torch.optim.Optimizer,
+    config: ExperimentConfig,
+) -> torch.optim.lr_scheduler.LRScheduler | None:
+    if config.stage2.scheduler_name == "none":
+        return None
+    return build_cosine_warmup_scheduler(
+        optimizer,
+        num_epochs=config.stage2.num_epochs,
+        warmup_epochs=config.stage2.warmup_epochs,
+        min_lr_ratio=config.stage2.min_lr_ratio,
     )
 
 
@@ -511,7 +533,12 @@ def main() -> None:
         config.stage2.temporal_aux_loss_weight = args.temporal_aux_loss_weight
     if args.early_stopping_patience is not None:
         config.stage2.early_stopping_patience = args.early_stopping_patience
+    if args.seed is not None:
+        config.stage2.seed = args.seed
+    if args.scheduler is not None:
+        config.stage2.scheduler_name = args.scheduler
     config.postprocess.prediction_mode = "peak" if config.stage2.target_mode == "onset" else "cumulative"
+    seed_everything(config.stage2.seed)
     print_device_diagnostics()
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     train_dataset, train_loader, val_dataset, val_loader = make_dataloaders(config, args)
@@ -525,6 +552,8 @@ def main() -> None:
                 f"monotonic_weight={config.stage2.monotonic_loss_weight}",
                 f"temporal_aux_weight={config.stage2.temporal_aux_loss_weight}",
                 f"early_stopping_patience={config.stage2.early_stopping_patience}",
+                f"seed={config.stage2.seed}",
+                f"scheduler={config.stage2.scheduler_name}",
                 f"batch_size={config.stage2.batch_size}",
                 f"max_steps={config.stage2.max_steps_per_sample}",
                 f"window_stride={config.stage2.window_stride_steps}",
@@ -552,6 +581,7 @@ def main() -> None:
     ).to(device)
     maybe_load_init_checkpoint(model, args.init_checkpoint)
     optimizer = build_optimizer(model, config)
+    scheduler = build_scheduler(optimizer, config)
 
     best_f1 = -1.0
     best_metrics: dict[str, float] = {}
@@ -584,11 +614,19 @@ def main() -> None:
         print(f"{log_prefix(args.run_name)} epoch={epoch} train_loss={train_loss:.4f}")
 
         if val_loader is None:
+            if scheduler is not None:
+                scheduler.step()
+                current_lr = optimizer.param_groups[-1]["lr"]
+                print(f"{log_prefix(args.run_name)} epoch={epoch} lr={current_lr:.6e}")
             continue
         if args.validate_every > 1 and epoch % args.validate_every != 0:
             print(
                 f"{log_prefix(args.run_name)} epoch={epoch} validation=skipped validate_every={args.validate_every}"
             )
+            if scheduler is not None:
+                scheduler.step()
+                current_lr = optimizer.param_groups[-1]["lr"]
+                print(f"{log_prefix(args.run_name)} epoch={epoch} lr={current_lr:.6e}")
             continue
         metrics = validate(
             model=model,
@@ -660,6 +698,10 @@ def main() -> None:
                 )
             )
             break
+        if scheduler is not None:
+            scheduler.step()
+            current_lr = optimizer.param_groups[-1]["lr"]
+            print(f"{log_prefix(args.run_name)} epoch={epoch} lr={current_lr:.6e}")
 
     if best_metrics:
         print(f"{log_prefix(args.run_name)} best_epoch={best_epoch} best_f1={best_metrics['f1_score']:.4f}")
