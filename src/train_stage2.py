@@ -39,6 +39,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--validate-every", type=int, default=1)
     parser.add_argument("--early-stopping-patience", type=int, default=None)
+    parser.add_argument("--min-recall-for-selection", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--scheduler", type=str, choices=("cosine", "none"), default=None)
     parser.add_argument("--monotonic-loss-weight", type=float, default=None)
@@ -252,7 +253,9 @@ def sweep_postprocess_thresholds(
     per_video_scores: dict[str, list[tuple[float, float]]],
     per_video_probs: dict[str, list[float]],
 ) -> dict[str, float]:
-    best: dict[str, float] | None = None
+    best_any: dict[str, float] | None = None
+    best_constrained: dict[str, float] | None = None
+    min_recall = config.postprocess.selection_min_recall
     for tau_empty in config.postprocess.tau_empty_grid:
         for tau_start in config.postprocess.tau_start_grid:
             for tau_keep in config.postprocess.tau_keep_grid:
@@ -307,22 +310,28 @@ def sweep_postprocess_thresholds(
                             "tau_video": float(tau_video),
                             "min_consecutive_steps": float(min_consecutive_steps),
                         }
-                        if best is None:
-                            best = candidate
-                            continue
-                        if candidate["f1_score"] > best["f1_score"]:
-                            best = candidate
-                            continue
-                        if candidate["f1_score"] == best["f1_score"] and candidate["precision"] > best["precision"]:
-                            best = candidate
-                            continue
-                        if (
-                            candidate["f1_score"] == best["f1_score"]
-                            and candidate["precision"] == best["precision"]
-                            and candidate["recall"] > best["recall"]
-                        ):
-                            best = candidate
+                        def _prefer(lhs: dict[str, float] | None, rhs: dict[str, float]) -> dict[str, float]:
+                            if lhs is None:
+                                return rhs
+                            if rhs["f1_score"] > lhs["f1_score"]:
+                                return rhs
+                            if rhs["f1_score"] == lhs["f1_score"] and rhs["precision"] > lhs["precision"]:
+                                return rhs
+                            if (
+                                rhs["f1_score"] == lhs["f1_score"]
+                                and rhs["precision"] == lhs["precision"]
+                                and rhs["recall"] > lhs["recall"]
+                            ):
+                                return rhs
+                            return lhs
+
+                        best_any = _prefer(best_any, candidate)
+                        if min_recall is not None and candidate["recall"] >= min_recall:
+                            best_constrained = _prefer(best_constrained, candidate)
+    best = best_constrained if best_constrained is not None else best_any
     assert best is not None
+    best["selection_min_recall"] = float(min_recall) if min_recall is not None else -1.0
+    best["selection_recall_floor_met"] = 1.0 if best_constrained is not None else 0.0
     return best
 
 
@@ -507,6 +516,8 @@ def validate(
         "tau_keep": sweep_metrics["tau_keep"],
         "tau_video": sweep_metrics["tau_video"],
         "min_consecutive_steps": sweep_metrics["min_consecutive_steps"],
+        "selection_min_recall": sweep_metrics["selection_min_recall"],
+        "selection_recall_floor_met": sweep_metrics["selection_recall_floor_met"],
     }
 
 
@@ -533,6 +544,8 @@ def main() -> None:
         config.stage2.temporal_aux_loss_weight = args.temporal_aux_loss_weight
     if args.early_stopping_patience is not None:
         config.stage2.early_stopping_patience = args.early_stopping_patience
+    if args.min_recall_for_selection is not None:
+        config.postprocess.selection_min_recall = args.min_recall_for_selection
     if args.seed is not None:
         config.stage2.seed = args.seed
     if args.scheduler is not None:
@@ -552,6 +565,7 @@ def main() -> None:
                 f"monotonic_weight={config.stage2.monotonic_loss_weight}",
                 f"temporal_aux_weight={config.stage2.temporal_aux_loss_weight}",
                 f"early_stopping_patience={config.stage2.early_stopping_patience}",
+                f"selection_min_recall={config.postprocess.selection_min_recall}",
                 f"seed={config.stage2.seed}",
                 f"scheduler={config.stage2.scheduler_name}",
                 f"batch_size={config.stage2.batch_size}",
@@ -655,6 +669,7 @@ def main() -> None:
                     f"tau_keep={metrics['tau_keep']:.2f}",
                     f"tau_video={metrics['tau_video']:.2f}",
                     f"min_consecutive={int(metrics['min_consecutive_steps'])}",
+                    f"selection_recall_floor_met={bool(metrics['selection_recall_floor_met'])}",
                 ]
             )
         )
@@ -677,6 +692,8 @@ def main() -> None:
                     "tau_video": metrics["tau_video"],
                     "min_consecutive_steps": int(metrics["min_consecutive_steps"]),
                     "prediction_mode": config.postprocess.prediction_mode,
+                    "selection_min_recall": config.postprocess.selection_min_recall,
+                    "selection_recall_floor_met": bool(metrics["selection_recall_floor_met"]),
                 },
             )
             save_checkpoint(config.paths.checkpoints_dir / args.output_name, payload)

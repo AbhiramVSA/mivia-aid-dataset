@@ -23,6 +23,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--output-path", type=Path, required=True)
     parser.add_argument("--batch-size", type=int, default=16)
     parser.add_argument("--num-workers", type=int, default=4)
+    parser.add_argument("--min-recall-for-selection", type=float, default=None)
     return parser.parse_args()
 
 
@@ -68,6 +69,11 @@ def main() -> None:
     config.postprocess.prediction_mode = _config_value(
         config_dict, "postprocess", "prediction_mode", default=config.postprocess.prediction_mode
     )
+    config.postprocess.selection_min_recall = _config_value(
+        config_dict, "postprocess", "selection_min_recall", default=config.postprocess.selection_min_recall
+    )
+    if args.min_recall_for_selection is not None:
+        config.postprocess.selection_min_recall = args.min_recall_for_selection
 
     dataset = CachedSequenceDataset(
         cache_dir=args.cache_root / args.split,

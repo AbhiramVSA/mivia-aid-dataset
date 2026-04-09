@@ -40,6 +40,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--log-every", type=int, default=50)
     parser.add_argument("--validate-every", type=int, default=1)
     parser.add_argument("--early-stopping-patience", type=int, default=None)
+    parser.add_argument("--min-recall-for-selection", type=float, default=None)
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--scheduler", type=str, choices=("cosine", "none"), default=None)
     parser.add_argument("--monotonic-loss-weight", type=float, default=None)
@@ -308,6 +309,8 @@ def validate(
         "tau_keep": sweep_metrics["tau_keep"],
         "tau_video": sweep_metrics["tau_video"],
         "min_consecutive_steps": sweep_metrics["min_consecutive_steps"],
+        "selection_min_recall": sweep_metrics["selection_min_recall"],
+        "selection_recall_floor_met": sweep_metrics["selection_recall_floor_met"],
     }
 
 
@@ -329,6 +332,8 @@ def main() -> None:
         config.stage2.hard_negative_multiplier = args.hard_negative_multiplier
     if args.early_stopping_patience is not None:
         config.stage2.early_stopping_patience = args.early_stopping_patience
+    if args.min_recall_for_selection is not None:
+        config.postprocess.selection_min_recall = args.min_recall_for_selection
     if args.seed is not None:
         config.stage2.seed = args.seed
     if args.scheduler is not None:
@@ -351,6 +356,7 @@ def main() -> None:
                 f"video_balanced_sampling={not args.disable_video_balanced_sampling}",
                 f"hard_negative_multiplier={config.stage2.hard_negative_multiplier}",
                 f"early_stopping_patience={config.stage2.early_stopping_patience}",
+                f"selection_min_recall={config.postprocess.selection_min_recall}",
                 f"seed={config.stage2.seed}",
                 f"scheduler={config.stage2.scheduler_name}",
                 f"batch_size={config.stage2.batch_size}",
@@ -431,6 +437,7 @@ def main() -> None:
                     f"tau_keep={metrics['tau_keep']:.2f}",
                     f"tau_video={metrics['tau_video']:.2f}",
                     f"min_consecutive={int(metrics['min_consecutive_steps'])}",
+                    f"selection_recall_floor_met={bool(metrics['selection_recall_floor_met'])}",
                 ]
             )
         )
@@ -453,6 +460,8 @@ def main() -> None:
                     "tau_video": metrics["tau_video"],
                     "min_consecutive_steps": int(metrics["min_consecutive_steps"]),
                     "prediction_mode": config.postprocess.prediction_mode,
+                    "selection_min_recall": config.postprocess.selection_min_recall,
+                    "selection_recall_floor_met": bool(metrics["selection_recall_floor_met"]),
                 },
             )
             save_checkpoint(config.paths.checkpoints_dir / args.output_name, payload)
