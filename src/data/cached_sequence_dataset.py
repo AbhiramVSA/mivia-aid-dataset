@@ -8,6 +8,8 @@ from torch.utils.data import Dataset
 
 from src.data.temporal_targets import TEMPORAL_BIN_IGNORE_INDEX
 
+CACHE_SCHEMA_VERSION = 2
+
 
 @dataclass(slots=True)
 class CachedSequenceSample:
@@ -50,7 +52,16 @@ class CachedAnnotationMeta:
 
 
 def load_feature_cache(cache_path: Path) -> dict:
-    return torch.load(cache_path, map_location="cpu", weights_only=False)
+    bundle = torch.load(cache_path, map_location="cpu", weights_only=False)
+    schema_version = bundle.get("cache_schema_version")
+    if schema_version != CACHE_SCHEMA_VERSION:
+        raise RuntimeError(
+            f"Cache schema mismatch for {cache_path}: expected {CACHE_SCHEMA_VERSION}, found {schema_version}. "
+            "Re-run aid-extract-features with --force."
+        )
+    if "temporal_bin_targets" not in bundle:
+        raise RuntimeError(f"Cache missing temporal_bin_targets: {cache_path}. Re-run aid-extract-features with --force.")
+    return bundle
 
 
 class CachedSequenceDataset(Dataset[CachedSequenceSample]):
@@ -73,6 +84,9 @@ class CachedSequenceDataset(Dataset[CachedSequenceSample]):
         self.total_window_steps = sum(record.step_end - record.step_start for record in self.records)
         self.max_window_steps = max((record.step_end - record.step_start for record in self.records), default=0)
         self.sample_weights = self._build_sample_weights()
+        self.hard_negative_window_count = sum(
+            1 for record in self.records if record.cache_path.stem in self.hard_negative_video_ids
+        )
 
     def _build_window_records(self) -> list[CachedWindowRecord]:
         records: list[CachedWindowRecord] = []
@@ -127,6 +141,17 @@ class CachedSequenceDataset(Dataset[CachedSequenceSample]):
         if not self.records:
             return 0.0
         return self.total_window_steps / float(len(self.records))
+
+    @property
+    def temporal_bin_hist(self) -> list[int]:
+        hist = torch.zeros(4, dtype=torch.long)
+        for cache_path in self.cache_paths:
+            bundle = load_feature_cache(cache_path)
+            bins = bundle["temporal_bin_targets"]
+            bins = bins[bins >= 0]
+            if bins.numel() > 0:
+                hist += torch.bincount(bins, minlength=4).to(dtype=torch.long)
+        return hist.tolist()
 
     def __getitem__(self, index: int) -> CachedSequenceSample:
         record = self.records[index]

@@ -137,8 +137,18 @@ This sequence is chosen to maximize ROI while preserving the current working sys
 Feature extraction:
 
 ```bash
-uv run aid-extract-features --encoder-checkpoint artifacts/checkpoints/stage1_best.pt --split all --chunk-steps 64 --clip-batch-size 32
+uv run aid-extract-features --encoder-checkpoint artifacts/checkpoints/stage1_best.pt --split all --chunk-steps 64 --clip-batch-size 32 --force
 ```
+
+Notes:
+
+- Cache bundles are now schema-versioned.
+- If the schema changes, stale cache files are rejected and must be regenerated.
+- Extraction logs:
+  - schema version
+  - extracted / skipped counts
+  - positive / negative video counts
+  - temporal-bin class histogram
 
 Train cached Stage 2 with auxiliary supervision:
 
@@ -157,3 +167,10 @@ Retrain with hard negatives:
 ```bash
 uv run aid-stage2-cached --run-name cached_conv_cum_ms12_m005_aux020_hn300 --cache-root artifacts/features/stage2_cache/stage1_best --temporal-model conv --target-mode cumulative --lambda-video 0.5 --monotonic-loss-weight 0.05 --temporal-aux-loss-weight 0.2 --hard-negative-ids-path artifacts/hard_negatives/train_fp_ids.txt --hard-negative-multiplier 3.0 --batch-size 8 --max-steps 12 --window-stride 6 --num-workers 2 --num-epochs 20 --log-every 50 --validate-every 1 --output-name cached_conv_cum_ms12_m005_aux020_hn300.pt
 ```
+
+Startup logs now also include:
+
+- temporal-bin histogram for train and val caches
+- hard-negative video count
+- hard-negative window count
+- hard-negative window fraction

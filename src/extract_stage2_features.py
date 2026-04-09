@@ -18,6 +18,8 @@ from src.data.video_decode import (
 from src.models.videomae_encoder import VideoMAEClipEncoder
 from src.utils.checkpoint import load_checkpoint
 
+CACHE_SCHEMA_VERSION = 2
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Extract per-video Stage 2 clip embeddings")
@@ -26,6 +28,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--chunk-steps", type=int, default=64)
     parser.add_argument("--clip-batch-size", type=int, default=32)
     parser.add_argument("--limit", type=int, default=None)
+    parser.add_argument("--force", action="store_true")
     return parser.parse_args()
 
 
@@ -68,6 +71,7 @@ def encode_video(
         empty = torch.zeros((0, config.model.hidden_size), dtype=torch.float16)
         empty_time = torch.zeros((0,), dtype=torch.float32)
         return {
+            "cache_schema_version": CACHE_SCHEMA_VERSION,
             "video_id": annotation.video_id,
             "features": empty,
             "timestamps_s": empty_time,
@@ -128,6 +132,7 @@ def encode_video(
         temporal_bin_targets = torch.full_like(timestamps_s, TEMPORAL_BIN_IGNORE_INDEX, dtype=torch.long)
         video_target = torch.tensor(0.0, dtype=torch.float32)
     return {
+        "cache_schema_version": CACHE_SCHEMA_VERSION,
         "video_id": annotation.video_id,
         "features": features_tensor,
         "timestamps_s": timestamps_s,
@@ -152,13 +157,23 @@ def main() -> None:
     else:
         output_root = output_root / "pretrained"
 
+    temporal_bin_hist = torch.zeros(4, dtype=torch.long)
+    positive_videos = 0
+    negative_videos = 0
+    extracted = 0
+    skipped = 0
+
     for index, annotation in enumerate(records, start=1):
         split_dir = output_root / annotation.split
         split_dir.mkdir(parents=True, exist_ok=True)
         output_path = split_dir / f"{annotation.video_id}.pt"
-        if output_path.exists():
-            print(f"[cache] skip {index}/{len(records)} {annotation.split}/{annotation.video_id}")
-            continue
+        if output_path.exists() and not args.force:
+            existing = torch.load(output_path, map_location="cpu", weights_only=False)
+            if existing.get("cache_schema_version") == CACHE_SCHEMA_VERSION and "temporal_bin_targets" in existing:
+                skipped += 1
+                print(f"[cache] skip {index}/{len(records)} {annotation.split}/{annotation.video_id}")
+                continue
+            print(f"[cache] refresh {index}/{len(records)} {annotation.split}/{annotation.video_id} reason=schema")
         bundle = encode_video(
             annotation,
             config=config,
@@ -168,10 +183,32 @@ def main() -> None:
             clip_batch_size=args.clip_batch_size,
         )
         torch.save(bundle, output_path)
+        extracted += 1
+        if annotation.is_positive and annotation.start_s is not None:
+            positive_videos += 1
+            valid_bins = bundle["temporal_bin_targets"]
+            valid_bins = valid_bins[valid_bins >= 0]
+            if valid_bins.numel() > 0:
+                temporal_bin_hist += torch.bincount(valid_bins, minlength=4).to(dtype=torch.long)
+        else:
+            negative_videos += 1
         print(
             f"[cache] done {index}/{len(records)} {annotation.split}/{annotation.video_id} "
             f"steps={bundle['features'].shape[0]}"
         )
+    print(
+        " ".join(
+            [
+                f"[cache] schema={CACHE_SCHEMA_VERSION}",
+                f"output_root={output_root}",
+                f"extracted={extracted}",
+                f"skipped={skipped}",
+                f"positive_videos={positive_videos}",
+                f"negative_videos={negative_videos}",
+                f"temporal_bin_hist={temporal_bin_hist.tolist()}",
+            ]
+        )
+    )
 
 
 if __name__ == "__main__":

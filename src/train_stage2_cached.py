@@ -108,6 +108,21 @@ def print_dataset_summary(name: str, dataset: CachedSequenceDataset, loader: Dat
             ]
         )
     )
+    if name == "train":
+        total_windows = max(1, len(dataset))
+        weighted_fraction = dataset.hard_negative_window_count / float(total_windows)
+        print(
+            " ".join(
+                [
+                    f"{name}_hard_negative_video_count={len(dataset.hard_negative_video_ids)}",
+                    f"{name}_hard_negative_window_count={dataset.hard_negative_window_count}",
+                    f"{name}_hard_negative_window_fraction={weighted_fraction:.4f}",
+                    f"{name}_temporal_bin_hist={dataset.temporal_bin_hist}",
+                ]
+            )
+        )
+    else:
+        print(f"{name}_temporal_bin_hist={dataset.temporal_bin_hist}")
 
 
 def train_one_epoch(
