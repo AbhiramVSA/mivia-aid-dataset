@@ -3,6 +3,7 @@ from __future__ import annotations
 import torch
 from torch import nn
 
+from src.models.motion_fusion import MotionFeatureFusion
 from src.models.temporal_head import TemporalConvHead, TemporalTransformerHead
 
 
@@ -23,10 +24,10 @@ class TemporalOnlyModel(nn.Module):
         self.use_motion_branch = use_motion_branch
         self.motion_feature_dim = motion_feature_dim
         if use_motion_branch:
-            self.motion_fusion = nn.Sequential(
-                nn.Linear(hidden_size + motion_feature_dim, hidden_size),
-                nn.GELU(),
-                nn.LayerNorm(hidden_size),
+            self.motion_fusion = MotionFeatureFusion(
+                hidden_size=hidden_size,
+                motion_feature_dim=motion_feature_dim,
+                dropout=dropout,
             )
         else:
             self.motion_fusion = None
@@ -56,5 +57,5 @@ class TemporalOnlyModel(nn.Module):
         if self.motion_fusion is not None:
             if motion_features is None:
                 raise ValueError("motion_features are required when use_motion_branch=True")
-            features = self.motion_fusion(torch.cat([features, motion_features], dim=-1))
+            features = self.motion_fusion(features, motion_features)
         return self.temporal_head(features, step_mask=step_mask)

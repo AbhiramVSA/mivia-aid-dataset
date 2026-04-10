@@ -7,6 +7,7 @@ from torch.utils.data import Dataset
 
 from src.config import VideoSamplingConfig
 from src.data.annotations import VideoAnnotation
+from src.data.motion_features import compute_motion_feature_batch
 from src.data.temporal_targets import TEMPORAL_BIN_IGNORE_INDEX, build_temporal_distance_bins
 from src.data.video_decode import (
     build_causal_clip_indices,
@@ -21,6 +22,7 @@ from src.data.video_decode import (
 class SequenceSample:
     video_id: str
     clip_tensor: torch.Tensor
+    motion_features: torch.Tensor
     timestamps_s: torch.Tensor
     step_targets: torch.Tensor
     onset_targets: torch.Tensor
@@ -34,6 +36,7 @@ class SequenceSample:
 class SequenceBatch:
     video_ids: list[str]
     clip_tensor: torch.Tensor
+    motion_features: torch.Tensor
     timestamps_s: torch.Tensor
     step_targets: torch.Tensor
     onset_targets: torch.Tensor
@@ -135,6 +138,7 @@ class Stage2SequenceDataset(Dataset[SequenceSample]):
             )
             for _, end_idx in clip_spans
         ]
+        motion_features = compute_motion_feature_batch(clips)
         clip_tensor = preprocess_clip_batch(clips, backbone_name=self.backbone_name)
         timestamps_s = torch.tensor(
             [(end_idx - 1) / float(self.sampling.sample_fps) for _, end_idx in clip_spans],
@@ -162,6 +166,7 @@ class Stage2SequenceDataset(Dataset[SequenceSample]):
         return SequenceSample(
             video_id=annotation.video_id,
             clip_tensor=clip_tensor,
+            motion_features=motion_features,
             timestamps_s=timestamps_s,
             step_targets=step_targets,
             onset_targets=onset_targets,
@@ -183,6 +188,8 @@ def collate_sequence_batch(samples: list[SequenceSample]) -> SequenceBatch:
         (batch_size, max_steps, channels, frames_per_clip, height, width),
         dtype=samples[0].clip_tensor.dtype,
     )
+    motion_dim = samples[0].motion_features.shape[-1]
+    motion_features = torch.zeros((batch_size, max_steps, motion_dim), dtype=samples[0].motion_features.dtype)
     timestamps_s = torch.zeros((batch_size, max_steps), dtype=torch.float32)
     step_targets = torch.zeros((batch_size, max_steps), dtype=torch.float32)
     onset_targets = torch.zeros((batch_size, max_steps), dtype=torch.float32)
@@ -195,6 +202,7 @@ def collate_sequence_batch(samples: list[SequenceSample]) -> SequenceBatch:
     for batch_index, sample in enumerate(samples):
         num_steps = sample.clip_tensor.shape[0]
         clip_tensor[batch_index, :num_steps] = sample.clip_tensor
+        motion_features[batch_index, :num_steps] = sample.motion_features
         timestamps_s[batch_index, :num_steps] = sample.timestamps_s
         step_targets[batch_index, :num_steps] = sample.step_targets
         onset_targets[batch_index, :num_steps] = sample.onset_targets
@@ -205,6 +213,7 @@ def collate_sequence_batch(samples: list[SequenceSample]) -> SequenceBatch:
     return SequenceBatch(
         video_ids=video_ids,
         clip_tensor=clip_tensor,
+        motion_features=motion_features,
         timestamps_s=timestamps_s,
         step_targets=step_targets,
         onset_targets=onset_targets,

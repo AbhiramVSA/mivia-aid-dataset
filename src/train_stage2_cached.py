@@ -402,6 +402,7 @@ def main() -> None:
     best_metrics: dict[str, float] = {}
     best_epoch = 0
     validations_without_improvement = 0
+    selection_floor_ever_met = False
     for epoch in range(1, config.stage2.num_epochs + 1):
         train_loss = train_one_epoch(
             model=model,
@@ -456,6 +457,9 @@ def main() -> None:
                 ]
             )
         )
+        floor_met = bool(metrics["selection_recall_floor_met"])
+        if floor_met:
+            selection_floor_ever_met = True
         if metrics["f1_score"] > best_f1:
             best_f1 = metrics["f1_score"]
             best_metrics = metrics
@@ -481,10 +485,24 @@ def main() -> None:
             )
             save_checkpoint(config.paths.checkpoints_dir / args.output_name, payload)
         else:
-            validations_without_improvement += 1
+            if config.postprocess.selection_min_recall is None or selection_floor_ever_met:
+                validations_without_improvement += 1
+            else:
+                print(
+                    " ".join(
+                        [
+                            log_prefix(args.run_name),
+                            f"epoch={epoch}",
+                            "early_stopping=deferred",
+                            f"selection_recall_floor_met={floor_met}",
+                            f"selection_min_recall={config.postprocess.selection_min_recall}",
+                        ]
+                    )
+                )
 
         patience = config.stage2.early_stopping_patience
-        if patience is not None and patience >= 0 and validations_without_improvement >= patience:
+        can_stop = config.postprocess.selection_min_recall is None or selection_floor_ever_met
+        if patience is not None and patience >= 0 and can_stop and validations_without_improvement >= patience:
             print(
                 " ".join(
                     [

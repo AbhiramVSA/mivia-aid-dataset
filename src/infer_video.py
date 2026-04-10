@@ -6,6 +6,7 @@ from pathlib import Path
 import torch
 
 from src.config import ExperimentConfig
+from src.data.motion_features import compute_motion_feature_batch
 from src.data.video_decode import (
     build_causal_clip_indices,
     decode_sampled_frame_window,
@@ -51,6 +52,12 @@ def _load_bundle(checkpoint_path: str) -> tuple[AIDTemporalModel, torch.device, 
     transformer_ffn_dim = _config_value(
         config_dict, "model", "transformer_ffn_dim", default=config.model.transformer_ffn_dim
     )
+    use_motion_branch = _config_value(
+        config_dict, "model", "use_motion_branch", default=config.model.use_motion_branch
+    )
+    motion_feature_dim = _config_value(
+        config_dict, "model", "motion_feature_dim", default=config.model.motion_feature_dim
+    )
     config.model.backbone_name = backbone_name
     config.model.hidden_size = hidden_size
     config.model.temporal_model = temporal_model
@@ -59,6 +66,8 @@ def _load_bundle(checkpoint_path: str) -> tuple[AIDTemporalModel, torch.device, 
     config.model.transformer_layers = transformer_layers
     config.model.transformer_heads = transformer_heads
     config.model.transformer_ffn_dim = transformer_ffn_dim
+    config.model.use_motion_branch = use_motion_branch
+    config.model.motion_feature_dim = motion_feature_dim
     config.video.sample_fps = _config_value(config_dict, "video", "sample_fps", default=config.video.sample_fps)
     config.video.clip_num_frames = _config_value(
         config_dict, "video", "clip_num_frames", default=config.video.clip_num_frames
@@ -99,6 +108,8 @@ def _load_bundle(checkpoint_path: str) -> tuple[AIDTemporalModel, torch.device, 
         transformer_layers=transformer_layers,
         transformer_heads=transformer_heads,
         transformer_ffn_dim=transformer_ffn_dim,
+        use_motion_branch=use_motion_branch,
+        motion_feature_dim=motion_feature_dim,
     )
     model.load_state_dict(payload["model_state_dict"], strict=False)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -144,8 +155,11 @@ def infer_single_video(video_path: Path, checkpoint_path: Path | None = None) ->
             )
             for _, end_idx in window_spans
         ]
+        motion_features = None
+        if config.model.use_motion_branch:
+            motion_features = compute_motion_feature_batch(clips).unsqueeze(0).to(device=device, dtype=torch.float32)
         clip_tensor = preprocess_clip_batch(clips, backbone_name=config.model.backbone_name).unsqueeze(0).to(device)
-        step_logits, video_logits, _ = model(clip_tensor)
+        step_logits, video_logits, _ = model(clip_tensor, motion_features=motion_features)
         step_scores = torch.sigmoid(step_logits[0]).cpu().tolist()
         video_scores.append(float(torch.sigmoid(video_logits[0]).item()))
         timestamps = [(end_idx - 1) / float(config.video.sample_fps) for _, end_idx in window_spans]

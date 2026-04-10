@@ -1,176 +1,206 @@
 # Next-Gen Architecture And Implementation Plan
 
-## Current Best Baseline
+## Current System
 
-- Stage 1 warm-started `VideoMAE-base` encoder
-- Sampling:
+The pipeline is still a two-stage system.
+
+Stage 1:
+
+- backbone: `MCG-NJU/videomae-base`
+- input sampling:
   - `8 FPS`
   - `16` frames per clip
-  - `4` sampled-frame stride
-  - clip span `2.0s`
+  - `4` sampled-frame stride inside each clip
+  - clip duration `2.0s`
   - step spacing `0.5s`
-- Stage 2 winner:
-  - temporal model: `conv`
-  - target mode: `cumulative`
-  - `max_steps=12`
-  - `window_stride=6`
-  - `lambda_video=0.5`
-  - `monotonic_loss_weight=0.05`
-- Best cached validation result so far:
-  - `F1 = 0.7756`
+- output:
+  - a warm-start checkpoint used to initialize the raw Stage 2 encoder
+  - a cached feature root used by the fast Stage 2 search loop
 
-## Why The Baseline Saturates
+Stage 2:
 
-The current system is strong but bottlenecked by three issues:
+- task formulation: temporal onset detection with cumulative step targets
+- current stable temporal family: `conv`
+- current stable search loop: cached Stage 2
+- stabilizers in place:
+  - fixed seeding
+  - cosine LR schedule
+  - monotonic loss on cumulative outputs
+  - recall-constrained threshold selection
+  - early stopping
 
-1. RGB-only clip embeddings do not explicitly model motion discontinuities.
-2. Cumulative supervision teaches stable post-onset detection, but weakly teaches temporal progression.
-3. Precision is still the limiting factor, so false-positive negatives need targeted reweighting.
+## Current Best Knowledge
 
-## Implemented Next-Gen Upgrade
+What has held up across reruns:
 
-This repo now includes the first practical upgrade path that does not destabilize the current baseline.
+- Stage 1 warm-start is useful and should stay.
+- Cumulative targets outperform onset-only targets for this contest metric.
+- The conv temporal head is more stable than the small transformer here.
+- Cached Stage 2 is the correct experimentation path because raw Stage 2 is dominated by decode and preprocessing cost.
 
-### 1. Auxiliary Temporal-Progression Head
+What did not improve the model:
 
-The temporal heads now predict:
+- larger hard-negative multipliers
+- stronger auxiliary temporal-bin loss
+- replacing conv with the current transformer head
 
-- step logits
-- video logits
-- temporal-distance bin logits
+What is now implemented beyond the original baseline:
 
-Temporal-distance bins are defined relative to the annotated onset:
+- cached feature extraction with schema validation and `--force`
+- cached motion descriptors
+- seeded Stage 2 runs
+- recall-constrained model selection
+- motion fusion in both cached and raw Stage 2 paths
+- motion-aware inference support for submission-time decoding
 
-- `0`: far before (`t - onset < -5s`)
-- `1`: near before (`-5s <= t - onset < 0s`)
-- `2`: near after (`0s <= t - onset <= 5s`)
-- `3`: far after (`t - onset > 5s`)
+## Architecture Details
 
-Negative videos are ignored for this auxiliary loss.
+### Stage 1
 
-This keeps the cumulative objective as the main contest-aligned target while adding progression supervision.
+Stage 1 trains `VideoMAE-base` as a clip-level warm-start model.
 
-### 2. Hard-Negative Weighting Hooks
+- clips are causal windows built from sampled video frames
+- each step predicts whether the incident has already started by that time
+- the resulting checkpoint is not the final submission model
+- its practical value is encoder adaptation before Stage 2
 
-Cached Stage 2 training now supports:
+### Raw Stage 2
 
-- a text file of hard-negative video IDs
-- a configurable multiplier applied on top of video-balanced sampling
+Raw Stage 2 is end-to-end and now supports both RGB-only and RGB+motion.
 
-This lets us upweight negatives that the current model falsely activates on.
+Data path:
 
-### 3. Hard-Negative Mining Utility
+- decode sampled frames from video
+- build causal clips over the decoded frame window
+- preprocess clips for `VideoMAE`
+- compute lightweight motion descriptors from raw frame differences
+- batch clips into `[B, T, C, F, H, W]`
+- batch motion descriptors into `[B, T, D_motion]`
 
-Added a script to mine false-positive negatives from a cached checkpoint:
+Model path:
 
-- `aid-mine-hard-negatives`
+- `VideoMAEClipEncoder` produces per-step RGB embeddings
+- optional `MotionFeatureFusion` maps the motion descriptor into the hidden space and fuses it with a learned gate
+- the temporal head predicts:
+  - step logits
+  - video logits
+  - temporal-bin logits
 
-This uses a cached Stage 2 checkpoint and the saved decoding thresholds to produce a list of negative video IDs that still trigger falsely.
+Loss:
 
-## New Training Objective
+`L = BCE_step + lambda_video * BCE_video + lambda_monotonic * monotonic_penalty + lambda_aux * CE_temporal_bins`
 
-For Stage 2, the total loss is now:
+### Cached Stage 2
 
-`L = L_step + lambda_video * L_video + lambda_monotonic * L_monotonic + lambda_aux * L_temporal_bin`
+Cached Stage 2 is the primary experimentation loop.
 
-Where:
+Cached bundle fields:
 
-- `L_step`: BCE on cumulative targets
-- `L_video`: BCE on video-level incident prediction
-- `L_monotonic`: penalty on downward probability transitions
-- `L_temporal_bin`: cross-entropy on temporal-distance bins for positive videos
+- `features`
+- `motion_features`
+- `timestamps_s`
+- `step_targets`
+- `onset_targets`
+- `temporal_bin_targets`
+- `video_target`
+- `source_positive`
+- `ground_truth_start_s`
+- `cache_schema_version`
 
-## Recommended Experiment Order
+Cached training keeps the same temporal model and postprocessing logic as raw Stage 2, but skips repeated video decoding and encoder forward passes.
 
-### Wave 1: Auxiliary Supervision Only
+## Motion Branch
 
-Start from the current best recipe and sweep `temporal_aux_loss_weight`:
+The current motion branch is deliberately lightweight.
 
-- `0.0`
-- `0.1`
-- `0.2`
-- `0.3`
+Descriptor:
 
-Keep fixed:
+- frame-difference based
+- `24` dimensions
+- captures resampled stepwise motion magnitude plus channelwise and global summary statistics
 
-- `conv`
-- `cumulative`
-- `ms12`
-- `lambda_video=0.5`
-- `monotonic_loss_weight=0.05`
+Fusion:
 
-### Wave 2: Hard-Negative Mining
+- motion descriptor is encoded through a small MLP bottleneck
+- a learned gate modulates how much motion information is injected into each RGB feature
+- the fused representation is normalized before the temporal head
 
-1. Train the best auxiliary-supervision model.
-2. Mine false-positive negatives:
+This is a probe architecture, not the final motion model. If motion helps, the next step should be a learned motion encoder rather than more threshold tuning around the handcrafted descriptor.
 
-```bash
-uv run aid-mine-hard-negatives --checkpoint artifacts/checkpoints/<best>.pt --cache-root artifacts/features/stage2_cache/stage1_best --split train --output-path artifacts/hard_negatives/train_fp_ids.txt
-```
+## Postprocessing And Selection
 
-3. Retrain with:
+Stage 2 prediction uses threshold search over:
 
-- `--hard-negative-ids-path artifacts/hard_negatives/train_fp_ids.txt`
-- `--hard-negative-multiplier 2.0` or `3.0`
+- `tau_empty`
+- `tau_start`
+- `tau_keep`
+- `tau_video`
+- `min_consecutive_steps`
 
-### Wave 3: Motion Branch
+The search now supports recall-constrained model selection.
 
-Only after exhausting the auxiliary + hard-negative path:
+- if `selection_min_recall` is set, the trainer prefers the best threshold set that meets the recall floor
+- if no threshold set meets the floor, selection falls back to the unconstrained best candidate
+- early stopping is now deferred until the recall floor has been met at least once, so runs are not terminated before they enter a recall-feasible regime
 
-- add a separate motion encoder over frame differences or optical flow
-- fuse motion embedding with the RGB clip embedding before the temporal head
+The threshold grids now include higher-precision operating points:
 
-This is the next likely step-change improvement, but it is intentionally not the first upgrade.
+- `tau_start` includes `0.8` and `0.9`
+- `tau_video` includes `0.8` and `0.9`
+- `min_consecutive_steps` includes `4`
 
-## Why This Plan
+## Cache Management
 
-This sequence is chosen to maximize ROI while preserving the current working system:
+Feature extraction is schema-versioned.
 
-- keep Stage 1 warm-start
-- keep cumulative detection
-- keep the winning conv head
-- add richer supervision before rewriting the visual front-end
-- add hard-negative pressure before moving to a larger architectural branch
+- stale bundles are rejected by the cached dataset loader
+- `--force` rebuilds all bundles
+- extraction logs:
+  - extracted / skipped counts
+  - positive / negative video counts
+  - temporal-bin histogram
 
-## Commands Summary
+When any cache field changes, rebuild the cache before training.
 
-Feature extraction:
+## Experiment Guidance
+
+Recommended search order:
+
+1. RGB-only cached conv baseline under recall floor.
+2. RGB+motion cached conv under the same seed and recall floor.
+3. Repeat with at least two seeds before claiming a gain.
+4. Only then promote the winner to a raw Stage 2 confirmation run.
+
+Recommended comparison axis now:
+
+- `--use-motion-branch` off vs on
+- same seed
+- same `lambda_video`
+- same `monotonic-loss-weight`
+- same recall floor
+
+## Practical Commands
+
+Rebuild cache after schema or feature changes:
 
 ```bash
 uv run aid-extract-features --encoder-checkpoint artifacts/checkpoints/stage1_best.pt --split all --chunk-steps 64 --clip-batch-size 32 --force
 ```
 
-Notes:
-
-- Cache bundles are now schema-versioned.
-- If the schema changes, stale cache files are rejected and must be regenerated.
-- Extraction logs:
-  - schema version
-  - extracted / skipped counts
-  - positive / negative video counts
-  - temporal-bin class histogram
-
-Train cached Stage 2 with auxiliary supervision:
+Cached RGB-only baseline:
 
 ```bash
-uv run aid-stage2-cached --run-name cached_conv_cum_ms12_m005_aux020 --cache-root artifacts/features/stage2_cache/stage1_best --temporal-model conv --target-mode cumulative --lambda-video 0.5 --monotonic-loss-weight 0.05 --temporal-aux-loss-weight 0.2 --batch-size 8 --max-steps 12 --window-stride 6 --num-workers 2 --num-epochs 20 --log-every 50 --validate-every 1 --output-name cached_conv_cum_ms12_m005_aux020.pt
+uv run aid-stage2-cached --run-name cached_conv_rgb_s1337 --cache-root artifacts/features/stage2_cache/stage1_best --temporal-model conv --target-mode cumulative --lambda-video 0.5 --monotonic-loss-weight 0.05 --batch-size 8 --max-steps 12 --window-stride 6 --num-workers 2 --num-epochs 20 --validate-every 1 --early-stopping-patience 4 --min-recall-for-selection 0.90 --seed 1337 --output-name cached_conv_rgb_s1337.pt
 ```
 
-Mine hard negatives:
+Cached RGB+motion comparison:
 
 ```bash
-uv run aid-mine-hard-negatives --checkpoint artifacts/checkpoints/cached_conv_cum_ms12_m005_aux020.pt --cache-root artifacts/features/stage2_cache/stage1_best --split train --output-path artifacts/hard_negatives/train_fp_ids.txt
+uv run aid-stage2-cached --run-name cached_conv_rgb_motion_s1337 --cache-root artifacts/features/stage2_cache/stage1_best --temporal-model conv --target-mode cumulative --use-motion-branch --lambda-video 0.5 --monotonic-loss-weight 0.05 --batch-size 8 --max-steps 12 --window-stride 6 --num-workers 2 --num-epochs 20 --validate-every 1 --early-stopping-patience 4 --min-recall-for-selection 0.90 --seed 1337 --output-name cached_conv_rgb_motion_s1337.pt
 ```
 
-Retrain with hard negatives:
+Raw confirmation run for the winning setup:
 
 ```bash
-uv run aid-stage2-cached --run-name cached_conv_cum_ms12_m005_aux020_hn300 --cache-root artifacts/features/stage2_cache/stage1_best --temporal-model conv --target-mode cumulative --lambda-video 0.5 --monotonic-loss-weight 0.05 --temporal-aux-loss-weight 0.2 --hard-negative-ids-path artifacts/hard_negatives/train_fp_ids.txt --hard-negative-multiplier 3.0 --batch-size 8 --max-steps 12 --window-stride 6 --num-workers 2 --num-epochs 20 --log-every 50 --validate-every 1 --output-name cached_conv_cum_ms12_m005_aux020_hn300.pt
+uv run aid-stage2 --run-name raw_confirm_motion --init-checkpoint artifacts/checkpoints/stage1_best.pt --temporal-model conv --target-mode cumulative --use-motion-branch --lambda-video 0.5 --monotonic-loss-weight 0.05 --batch-size 1 --max-steps 12 --window-stride 6 --num-workers 4 --num-epochs 20 --validate-every 1 --early-stopping-patience 4 --min-recall-for-selection 0.90 --output-name raw_confirm_motion.pt
 ```
-
-Startup logs now also include:
-
-- temporal-bin histogram for train and val caches
-- hard-negative video count
-- hard-negative window count
-- hard-negative window fraction

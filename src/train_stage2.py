@@ -44,6 +44,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--scheduler", type=str, choices=("cosine", "none"), default=None)
     parser.add_argument("--monotonic-loss-weight", type=float, default=None)
     parser.add_argument("--temporal-aux-loss-weight", type=float, default=None)
+    parser.add_argument("--use-motion-branch", action="store_true")
     return parser.parse_args()
 
 
@@ -171,6 +172,8 @@ def build_optimizer(model: AIDTemporalModel, config: ExperimentConfig) -> torch.
     _ = model.encoder.hidden_size
     encoder_params = list(model.encoder.parameters())
     head_params = list(model.temporal_head.parameters())
+    if model.motion_fusion is not None:
+        head_params.extend(model.motion_fusion.parameters())
     return torch.optim.AdamW(
         [
             {"params": encoder_params, "lr": config.stage2.backbone_lr},
@@ -357,6 +360,7 @@ def train_one_epoch(
     for batch_index, batch in enumerate(loader, start=1):
         data_ready_time = perf_counter()
         clip_tensor = batch.clip_tensor.to(device, non_blocking=True)
+        motion_features = batch.motion_features.to(device=device, dtype=torch.float32, non_blocking=True)
         selected_targets = (
             batch.onset_targets.to(device, non_blocking=True)
             if target_mode == "onset"
@@ -371,7 +375,11 @@ def train_one_epoch(
             torch.autocast(device_type="cuda", enabled=True) if amp and device.type == "cuda" else nullcontext()
         )
         with autocast_context:
-            step_logits, video_logits, temporal_bin_logits = model(clip_tensor, step_mask=step_mask)
+            step_logits, video_logits, temporal_bin_logits = model(
+                clip_tensor,
+                step_mask=step_mask,
+                motion_features=motion_features,
+            )
             loss = compute_stage2_loss(
                 step_logits=step_logits,
                 video_logits=video_logits,
@@ -443,6 +451,7 @@ def validate(
     for batch_index, batch in enumerate(loader, start=1):
         data_ready_time = perf_counter()
         clip_tensor = batch.clip_tensor.to(device, non_blocking=True)
+        motion_features = batch.motion_features.to(device=device, dtype=torch.float32, non_blocking=True)
         selected_targets = (
             batch.onset_targets.to(device, non_blocking=True)
             if target_mode == "onset"
@@ -452,7 +461,11 @@ def validate(
         step_mask = batch.step_mask.to(device, non_blocking=True)
         video_target = batch.video_target.to(device, non_blocking=True)
 
-        step_logits, video_logits, temporal_bin_logits = model(clip_tensor, step_mask=step_mask)
+        step_logits, video_logits, temporal_bin_logits = model(
+            clip_tensor,
+            step_mask=step_mask,
+            motion_features=motion_features,
+        )
         loss = compute_stage2_loss(
             step_logits=step_logits,
             video_logits=video_logits,
@@ -542,6 +555,7 @@ def main() -> None:
         config.stage2.monotonic_loss_weight = args.monotonic_loss_weight
     if args.temporal_aux_loss_weight is not None:
         config.stage2.temporal_aux_loss_weight = args.temporal_aux_loss_weight
+    config.model.use_motion_branch = args.use_motion_branch
     if args.early_stopping_patience is not None:
         config.stage2.early_stopping_patience = args.early_stopping_patience
     if args.min_recall_for_selection is not None:
@@ -564,6 +578,7 @@ def main() -> None:
                 f"lambda_video={args.lambda_video}",
                 f"monotonic_weight={config.stage2.monotonic_loss_weight}",
                 f"temporal_aux_weight={config.stage2.temporal_aux_loss_weight}",
+                f"use_motion_branch={config.model.use_motion_branch}",
                 f"early_stopping_patience={config.stage2.early_stopping_patience}",
                 f"selection_min_recall={config.postprocess.selection_min_recall}",
                 f"seed={config.stage2.seed}",
@@ -592,6 +607,8 @@ def main() -> None:
         transformer_layers=config.model.transformer_layers,
         transformer_heads=config.model.transformer_heads,
         transformer_ffn_dim=config.model.transformer_ffn_dim,
+        use_motion_branch=config.model.use_motion_branch,
+        motion_feature_dim=config.model.motion_feature_dim,
     ).to(device)
     maybe_load_init_checkpoint(model, args.init_checkpoint)
     optimizer = build_optimizer(model, config)
@@ -601,6 +618,7 @@ def main() -> None:
     best_metrics: dict[str, float] = {}
     best_epoch = 0
     validations_without_improvement = 0
+    selection_floor_ever_met = False
     val_annotations: list[VideoAnnotation] = []
     if config.paths.val_videos_dir.exists():
         val_annotations = build_split(
@@ -673,6 +691,9 @@ def main() -> None:
                 ]
             )
         )
+        floor_met = bool(metrics["selection_recall_floor_met"])
+        if floor_met:
+            selection_floor_ever_met = True
         if metrics["f1_score"] > best_f1:
             best_f1 = metrics["f1_score"]
             best_metrics = metrics
@@ -698,10 +719,24 @@ def main() -> None:
             )
             save_checkpoint(config.paths.checkpoints_dir / args.output_name, payload)
         else:
-            validations_without_improvement += 1
+            if config.postprocess.selection_min_recall is None or selection_floor_ever_met:
+                validations_without_improvement += 1
+            else:
+                print(
+                    " ".join(
+                        [
+                            log_prefix(args.run_name),
+                            f"epoch={epoch}",
+                            "early_stopping=deferred",
+                            f"selection_recall_floor_met={floor_met}",
+                            f"selection_min_recall={config.postprocess.selection_min_recall}",
+                        ]
+                    )
+                )
 
         patience = config.stage2.early_stopping_patience
-        if patience is not None and patience >= 0 and validations_without_improvement >= patience:
+        can_stop = config.postprocess.selection_min_recall is None or selection_floor_ever_met
+        if patience is not None and patience >= 0 and can_stop and validations_without_improvement >= patience:
             print(
                 " ".join(
                     [
