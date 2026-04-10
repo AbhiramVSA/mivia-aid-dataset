@@ -16,8 +16,20 @@ class TemporalOnlyModel(nn.Module):
         transformer_layers: int = 2,
         transformer_heads: int = 8,
         transformer_ffn_dim: int = 2048,
+        use_motion_branch: bool = False,
+        motion_feature_dim: int = 24,
     ) -> None:
         super().__init__()
+        self.use_motion_branch = use_motion_branch
+        self.motion_feature_dim = motion_feature_dim
+        if use_motion_branch:
+            self.motion_fusion = nn.Sequential(
+                nn.Linear(hidden_size + motion_feature_dim, hidden_size),
+                nn.GELU(),
+                nn.LayerNorm(hidden_size),
+            )
+        else:
+            self.motion_fusion = None
         if temporal_model == "conv":
             self.temporal_head = TemporalConvHead(
                 hidden_size=hidden_size,
@@ -36,6 +48,13 @@ class TemporalOnlyModel(nn.Module):
             raise ValueError(f"Unsupported temporal_model: {temporal_model}")
 
     def forward(
-        self, features: torch.Tensor, step_mask: torch.Tensor | None = None
+        self,
+        features: torch.Tensor,
+        step_mask: torch.Tensor | None = None,
+        motion_features: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+        if self.motion_fusion is not None:
+            if motion_features is None:
+                raise ValueError("motion_features are required when use_motion_branch=True")
+            features = self.motion_fusion(torch.cat([features, motion_features], dim=-1))
         return self.temporal_head(features, step_mask=step_mask)

@@ -32,6 +32,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--lambda-video", type=float, default=0.5)
     parser.add_argument("--temporal-model", type=str, choices=("conv", "transformer"), default="transformer")
     parser.add_argument("--target-mode", type=str, choices=("cumulative", "onset"), default="cumulative")
+    parser.add_argument("--use-motion-branch", action="store_true")
     parser.add_argument("--batch-size", type=int, default=8)
     parser.add_argument("--max-steps", type=int, default=12)
     parser.add_argument("--window-stride", type=int, default=6)
@@ -160,6 +161,7 @@ def train_one_epoch(
     for batch_index, batch in enumerate(loader, start=1):
         data_ready_time = perf_counter()
         features = batch.features.to(device=device, dtype=torch.float32, non_blocking=True)
+        motion_features = batch.motion_features.to(device=device, dtype=torch.float32, non_blocking=True)
         selected_targets = (
             batch.onset_targets.to(device, non_blocking=True)
             if target_mode == "onset"
@@ -174,7 +176,11 @@ def train_one_epoch(
             torch.autocast(device_type="cuda", enabled=True) if amp and device.type == "cuda" else nullcontext()
         )
         with autocast_context:
-            step_logits, video_logits, temporal_bin_logits = model(features, step_mask=step_mask)
+            step_logits, video_logits, temporal_bin_logits = model(
+                features,
+                step_mask=step_mask,
+                motion_features=motion_features,
+            )
             loss = compute_stage2_loss(
                 step_logits=step_logits,
                 video_logits=video_logits,
@@ -242,6 +248,7 @@ def validate(
     for batch_index, batch in enumerate(loader, start=1):
         data_ready_time = perf_counter()
         features = batch.features.to(device=device, dtype=torch.float32, non_blocking=True)
+        motion_features = batch.motion_features.to(device=device, dtype=torch.float32, non_blocking=True)
         selected_targets = (
             batch.onset_targets.to(device, non_blocking=True)
             if target_mode == "onset"
@@ -250,7 +257,11 @@ def validate(
         temporal_bin_targets = batch.temporal_bin_targets.to(device, non_blocking=True)
         step_mask = batch.step_mask.to(device, non_blocking=True)
         video_target = batch.video_target.to(device, non_blocking=True)
-        step_logits, video_logits, temporal_bin_logits = model(features, step_mask=step_mask)
+        step_logits, video_logits, temporal_bin_logits = model(
+            features,
+            step_mask=step_mask,
+            motion_features=motion_features,
+        )
         loss = compute_stage2_loss(
             step_logits=step_logits,
             video_logits=video_logits,
@@ -324,6 +335,7 @@ def main() -> None:
     config.stage2.num_epochs = args.num_epochs
     config.stage2.target_mode = args.target_mode
     config.model.temporal_model = args.temporal_model
+    config.model.use_motion_branch = args.use_motion_branch
     if args.monotonic_loss_weight is not None:
         config.stage2.monotonic_loss_weight = args.monotonic_loss_weight
     if args.temporal_aux_loss_weight is not None:
@@ -349,6 +361,7 @@ def main() -> None:
                 log_prefix(args.run_name),
                 f"cache_root={args.cache_root}",
                 f"temporal_model={config.model.temporal_model}",
+                f"use_motion_branch={config.model.use_motion_branch}",
                 f"target_mode={config.stage2.target_mode}",
                 f"lambda_video={args.lambda_video}",
                 f"monotonic_weight={config.stage2.monotonic_loss_weight}",
@@ -379,6 +392,8 @@ def main() -> None:
         transformer_layers=config.model.transformer_layers,
         transformer_heads=config.model.transformer_heads,
         transformer_ffn_dim=config.model.transformer_ffn_dim,
+        use_motion_branch=config.model.use_motion_branch,
+        motion_feature_dim=config.model.motion_feature_dim,
     ).to(device)
     optimizer = torch.optim.AdamW(model.parameters(), lr=config.stage2.head_lr, weight_decay=config.stage2.weight_decay)
     scheduler = build_scheduler(optimizer, config)

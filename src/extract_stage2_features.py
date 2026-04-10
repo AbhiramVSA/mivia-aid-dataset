@@ -7,6 +7,7 @@ import torch
 
 from src.config import ExperimentConfig
 from src.data.annotations import VideoAnnotation, load_annotations
+from src.data.motion_features import compute_motion_feature_batch
 from src.data.temporal_targets import TEMPORAL_BIN_IGNORE_INDEX, build_temporal_distance_bins
 from src.data.video_decode import (
     build_causal_clip_indices,
@@ -18,7 +19,7 @@ from src.data.video_decode import (
 from src.models.videomae_encoder import VideoMAEClipEncoder
 from src.utils.checkpoint import load_checkpoint
 
-CACHE_SCHEMA_VERSION = 2
+CACHE_SCHEMA_VERSION = 3
 
 
 def parse_args() -> argparse.Namespace:
@@ -89,6 +90,7 @@ def encode_video(
             "cache_schema_version": CACHE_SCHEMA_VERSION,
             "video_id": annotation.video_id,
             "features": empty,
+            "motion_features": torch.zeros((0, config.model.motion_feature_dim), dtype=torch.float16),
             "timestamps_s": empty_time,
             "step_targets": empty_time.clone(),
             "onset_targets": empty_time.clone(),
@@ -99,6 +101,7 @@ def encode_video(
         }
 
     all_features: list[torch.Tensor] = []
+    all_motion_features: list[torch.Tensor] = []
     all_timestamps: list[float] = []
 
     for start in range(0, len(clip_spans), chunk_steps):
@@ -126,10 +129,13 @@ def encode_video(
             batch_clips = clips[batch_start : batch_start + clip_batch_size]
             clip_tensor = preprocess_clip_batch(batch_clips, backbone_name=config.model.backbone_name).to(device)
             features = encoder(clip_tensor).to(dtype=torch.float16).cpu()
+            motion_features = compute_motion_feature_batch(batch_clips).to(dtype=torch.float16)
             all_features.append(features)
+            all_motion_features.append(motion_features)
         all_timestamps.extend([(end_idx - 1) / float(config.video.sample_fps) for _, end_idx in window_spans])
 
     features_tensor = torch.cat(all_features, dim=0)
+    motion_tensor = torch.cat(all_motion_features, dim=0)
     timestamps_s = torch.tensor(all_timestamps, dtype=torch.float32)
     if annotation.is_positive and annotation.start_s is not None:
         step_targets = (timestamps_s >= float(annotation.start_s)).to(dtype=torch.float32)
@@ -150,6 +156,7 @@ def encode_video(
         "cache_schema_version": CACHE_SCHEMA_VERSION,
         "video_id": annotation.video_id,
         "features": features_tensor,
+        "motion_features": motion_tensor,
         "timestamps_s": timestamps_s,
         "step_targets": step_targets,
         "onset_targets": onset_targets,

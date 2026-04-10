@@ -112,6 +112,8 @@ class ModelConfig:
     transformer_layers: int = 2
     transformer_heads: int = 8
     transformer_ffn_dim: int = 2048
+    use_motion_branch: bool = False
+    motion_feature_dim: int = 24
 
 
 @dataclass(slots=True)

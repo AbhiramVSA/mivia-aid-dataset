@@ -57,6 +57,12 @@ def main() -> None:
     config.model.transformer_ffn_dim = _config_value(
         config_dict, "model", "transformer_ffn_dim", default=config.model.transformer_ffn_dim
     )
+    config.model.use_motion_branch = _config_value(
+        config_dict, "model", "use_motion_branch", default=config.model.use_motion_branch
+    )
+    config.model.motion_feature_dim = _config_value(
+        config_dict, "model", "motion_feature_dim", default=config.model.motion_feature_dim
+    )
     config.stage2.max_steps_per_sample = _config_value(
         config_dict, "stage2", "max_steps_per_sample", default=config.stage2.max_steps_per_sample
     )
@@ -99,6 +105,8 @@ def main() -> None:
         transformer_layers=config.model.transformer_layers,
         transformer_heads=config.model.transformer_heads,
         transformer_ffn_dim=config.model.transformer_ffn_dim,
+        use_motion_branch=config.model.use_motion_branch,
+        motion_feature_dim=config.model.motion_feature_dim,
     ).to(device)
     model.load_state_dict(payload["model_state_dict"], strict=False)
     model.eval()
@@ -108,8 +116,9 @@ def main() -> None:
     with torch.no_grad():
         for batch in loader:
             features = batch.features.to(device=device, dtype=torch.float32, non_blocking=True)
+            motion_features = batch.motion_features.to(device=device, dtype=torch.float32, non_blocking=True)
             step_mask = batch.step_mask.to(device, non_blocking=True)
-            step_logits, video_logits, _ = model(features, step_mask=step_mask)
+            step_logits, video_logits, _ = model(features, step_mask=step_mask, motion_features=motion_features)
             probs = torch.sigmoid(step_logits).cpu()
             video_probs = torch.sigmoid(video_logits).cpu()
             for sample_index, video_id in enumerate(batch.video_ids):

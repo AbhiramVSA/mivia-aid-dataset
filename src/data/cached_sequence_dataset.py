@@ -8,13 +8,14 @@ from torch.utils.data import Dataset
 
 from src.data.temporal_targets import TEMPORAL_BIN_IGNORE_INDEX
 
-CACHE_SCHEMA_VERSION = 2
+CACHE_SCHEMA_VERSION = 3
 
 
 @dataclass(slots=True)
 class CachedSequenceSample:
     video_id: str
     features: torch.Tensor
+    motion_features: torch.Tensor
     timestamps_s: torch.Tensor
     step_targets: torch.Tensor
     onset_targets: torch.Tensor
@@ -28,6 +29,7 @@ class CachedSequenceSample:
 class CachedSequenceBatch:
     video_ids: list[str]
     features: torch.Tensor
+    motion_features: torch.Tensor
     timestamps_s: torch.Tensor
     step_targets: torch.Tensor
     onset_targets: torch.Tensor
@@ -61,6 +63,8 @@ def load_feature_cache(cache_path: Path) -> dict:
         )
     if "temporal_bin_targets" not in bundle:
         raise RuntimeError(f"Cache missing temporal_bin_targets: {cache_path}. Re-run aid-extract-features with --force.")
+    if "motion_features" not in bundle:
+        raise RuntimeError(f"Cache missing motion_features: {cache_path}. Re-run aid-extract-features with --force.")
     return bundle
 
 
@@ -169,6 +173,7 @@ class CachedSequenceDataset(Dataset[CachedSequenceSample]):
         sl = slice(record.step_start, record.step_end)
         timestamps_s = bundle["timestamps_s"][sl]
         features = bundle["features"][sl]
+        motion_features = bundle["motion_features"][sl]
         step_targets = bundle["step_targets"][sl]
         onset_targets = bundle["onset_targets"][sl]
         temporal_bin_targets = bundle["temporal_bin_targets"][sl]
@@ -176,6 +181,7 @@ class CachedSequenceDataset(Dataset[CachedSequenceSample]):
         return CachedSequenceSample(
             video_id=str(bundle["video_id"]),
             features=features,
+            motion_features=motion_features,
             timestamps_s=timestamps_s,
             step_targets=step_targets,
             onset_targets=onset_targets,
@@ -194,6 +200,8 @@ def collate_cached_sequence_batch(samples: list[CachedSequenceSample]) -> Cached
     hidden_size = samples[0].features.shape[-1]
 
     features = torch.zeros((batch_size, max_steps, hidden_size), dtype=samples[0].features.dtype)
+    motion_dim = samples[0].motion_features.shape[-1]
+    motion_features = torch.zeros((batch_size, max_steps, motion_dim), dtype=samples[0].motion_features.dtype)
     timestamps_s = torch.zeros((batch_size, max_steps), dtype=torch.float32)
     step_targets = torch.zeros((batch_size, max_steps), dtype=torch.float32)
     onset_targets = torch.zeros((batch_size, max_steps), dtype=torch.float32)
@@ -206,6 +214,7 @@ def collate_cached_sequence_batch(samples: list[CachedSequenceSample]) -> Cached
     for batch_index, sample in enumerate(samples):
         num_steps = sample.features.shape[0]
         features[batch_index, :num_steps] = sample.features
+        motion_features[batch_index, :num_steps] = sample.motion_features
         timestamps_s[batch_index, :num_steps] = sample.timestamps_s
         step_targets[batch_index, :num_steps] = sample.step_targets
         onset_targets[batch_index, :num_steps] = sample.onset_targets
@@ -216,6 +225,7 @@ def collate_cached_sequence_batch(samples: list[CachedSequenceSample]) -> Cached
     return CachedSequenceBatch(
         video_ids=video_ids,
         features=features,
+        motion_features=motion_features,
         timestamps_s=timestamps_s,
         step_targets=step_targets,
         onset_targets=onset_targets,
