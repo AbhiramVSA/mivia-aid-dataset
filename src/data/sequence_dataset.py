@@ -76,6 +76,7 @@ class Stage2SequenceDataset(Dataset[SequenceSample]):
         self.records = self._build_window_records()
         self.total_window_steps = sum(record.step_end - record.step_start for record in self.records)
         self.max_window_steps = max((record.step_end - record.step_start for record in self.records), default=0)
+        self.sample_weights = self._build_sample_weights()
 
     def _build_window_records(self) -> list[SequenceWindowRecord]:
         records: list[SequenceWindowRecord] = []
@@ -100,6 +101,18 @@ class Stage2SequenceDataset(Dataset[SequenceSample]):
 
     def __len__(self) -> int:
         return len(self.records)
+
+    def _build_sample_weights(self) -> torch.Tensor:
+        if not self.records:
+            return torch.zeros((0,), dtype=torch.float32)
+        windows_per_annotation: dict[int, int] = {}
+        for record in self.records:
+            windows_per_annotation[record.annotation_index] = windows_per_annotation.get(record.annotation_index, 0) + 1
+        weights = [
+            1.0 / float(windows_per_annotation[record.annotation_index])
+            for record in self.records
+        ]
+        return torch.tensor(weights, dtype=torch.float32)
 
     @property
     def num_videos(self) -> int:

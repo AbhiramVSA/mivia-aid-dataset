@@ -8,7 +8,7 @@ from time import perf_counter
 
 import torch
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 
 from src.config import ExperimentConfig
 from src.data.temporal_targets import TEMPORAL_BIN_IGNORE_INDEX
@@ -45,6 +45,9 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--monotonic-loss-weight", type=float, default=None)
     parser.add_argument("--temporal-aux-loss-weight", type=float, default=None)
     parser.add_argument("--use-motion-branch", action="store_true")
+    parser.add_argument("--disable-video-balanced-sampling", action="store_true")
+    parser.add_argument("--freeze-encoder", action="store_true")
+    parser.add_argument("--temporal-init-checkpoint", type=Path, default=None)
     return parser.parse_args()
 
 
@@ -111,15 +114,26 @@ def make_dataloaders(
         onset_sigma_s=config.stage2.onset_sigma_seconds if config.stage2.target_mode == "onset" else None,
         temporal_distance_bin_edges_s=config.stage2.temporal_distance_bin_edges_s,
     )
+    train_sampler = None
+    shuffle = True
+    if config.stage2.video_balanced_sampling:
+        train_sampler = WeightedRandomSampler(
+            weights=train_dataset.sample_weights,
+            num_samples=len(train_dataset),
+            replacement=True,
+            generator=generator,
+        )
+        shuffle = False
     train_loader = DataLoader(
         train_dataset,
         batch_size=config.stage2.batch_size,
-        shuffle=True,
+        shuffle=shuffle,
+        sampler=train_sampler,
         num_workers=config.stage2.num_workers,
         pin_memory=True,
         persistent_workers=config.stage2.num_workers > 0,
         worker_init_fn=worker_init_fn,
-        generator=generator,
+        generator=generator if shuffle else None,
         collate_fn=collate_sequence_batch,
     )
 
@@ -170,17 +184,16 @@ def print_dataset_summary(name: str, dataset: Stage2SequenceDataset, loader: Dat
 
 def build_optimizer(model: AIDTemporalModel, config: ExperimentConfig) -> torch.optim.Optimizer:
     _ = model.encoder.hidden_size
-    encoder_params = list(model.encoder.parameters())
     head_params = list(model.temporal_head.parameters())
     if model.motion_fusion is not None:
         head_params.extend(model.motion_fusion.parameters())
-    return torch.optim.AdamW(
-        [
-            {"params": encoder_params, "lr": config.stage2.backbone_lr},
-            {"params": head_params, "lr": config.stage2.head_lr},
-        ],
-        weight_decay=config.stage2.weight_decay,
-    )
+    param_groups: list[dict[str, object]] = [
+        {"params": head_params, "lr": config.stage2.head_lr},
+    ]
+    if not config.stage2.freeze_encoder:
+        encoder_params = list(model.encoder.parameters())
+        param_groups.insert(0, {"params": encoder_params, "lr": config.stage2.backbone_lr})
+    return torch.optim.AdamW(param_groups, weight_decay=config.stage2.weight_decay)
 
 
 def build_scheduler(
@@ -203,6 +216,36 @@ def maybe_load_init_checkpoint(model: AIDTemporalModel, checkpoint_path: Path | 
     payload = load_checkpoint(checkpoint_path)
     state_dict = payload["model_state_dict"]
     model.load_state_dict(state_dict, strict=False)
+
+
+def maybe_load_temporal_checkpoint(model: AIDTemporalModel, checkpoint_path: Path | None) -> None:
+    if checkpoint_path is None:
+        return
+    payload = load_checkpoint(checkpoint_path)
+    source_state_dict = payload["model_state_dict"]
+    target_state_dict = model.state_dict()
+    transferred: dict[str, torch.Tensor] = {}
+    for source_key, value in source_state_dict.items():
+        target_key = source_key
+        if source_key.startswith("temporal_head.") or source_key.startswith("motion_fusion."):
+            target_key = source_key
+        else:
+            continue
+        if target_key in target_state_dict and target_state_dict[target_key].shape == value.shape:
+            transferred[target_key] = value
+    missing = [key for key in ("temporal_head.step_classifier.weight",) if key not in transferred]
+    if missing:
+        raise RuntimeError(
+            f"Failed to transfer temporal weights from {checkpoint_path}; missing expected keys: {missing}"
+        )
+    model.load_state_dict(transferred, strict=False)
+
+
+def maybe_freeze_encoder(model: AIDTemporalModel, freeze_encoder: bool) -> None:
+    if not freeze_encoder:
+        return
+    for parameter in model.encoder.parameters():
+        parameter.requires_grad = False
 
 
 def compute_stage2_loss(
@@ -556,6 +599,8 @@ def main() -> None:
     if args.temporal_aux_loss_weight is not None:
         config.stage2.temporal_aux_loss_weight = args.temporal_aux_loss_weight
     config.model.use_motion_branch = args.use_motion_branch
+    config.stage2.video_balanced_sampling = not args.disable_video_balanced_sampling
+    config.stage2.freeze_encoder = args.freeze_encoder
     if args.early_stopping_patience is not None:
         config.stage2.early_stopping_patience = args.early_stopping_patience
     if args.min_recall_for_selection is not None:
@@ -579,6 +624,8 @@ def main() -> None:
                 f"monotonic_weight={config.stage2.monotonic_loss_weight}",
                 f"temporal_aux_weight={config.stage2.temporal_aux_loss_weight}",
                 f"use_motion_branch={config.model.use_motion_branch}",
+                f"video_balanced_sampling={config.stage2.video_balanced_sampling}",
+                f"freeze_encoder={config.stage2.freeze_encoder}",
                 f"early_stopping_patience={config.stage2.early_stopping_patience}",
                 f"selection_min_recall={config.postprocess.selection_min_recall}",
                 f"seed={config.stage2.seed}",
@@ -589,6 +636,7 @@ def main() -> None:
                 f"num_workers={config.stage2.num_workers}",
                 f"num_epochs={config.stage2.num_epochs}",
                 f"init_checkpoint={'none' if args.init_checkpoint is None else args.init_checkpoint.name}",
+                f"temporal_init_checkpoint={'none' if args.temporal_init_checkpoint is None else args.temporal_init_checkpoint.name}",
             ]
         )
     )
@@ -611,6 +659,8 @@ def main() -> None:
         motion_feature_dim=config.model.motion_feature_dim,
     ).to(device)
     maybe_load_init_checkpoint(model, args.init_checkpoint)
+    maybe_load_temporal_checkpoint(model, args.temporal_init_checkpoint)
+    maybe_freeze_encoder(model, config.stage2.freeze_encoder)
     optimizer = build_optimizer(model, config)
     scheduler = build_scheduler(optimizer, config)
 
@@ -715,6 +765,9 @@ def main() -> None:
                     "prediction_mode": config.postprocess.prediction_mode,
                     "selection_min_recall": config.postprocess.selection_min_recall,
                     "selection_recall_floor_met": bool(metrics["selection_recall_floor_met"]),
+                    "video_balanced_sampling": config.stage2.video_balanced_sampling,
+                    "freeze_encoder": config.stage2.freeze_encoder,
+                    "temporal_init_checkpoint": str(args.temporal_init_checkpoint) if args.temporal_init_checkpoint is not None else None,
                 },
             )
             save_checkpoint(config.paths.checkpoints_dir / args.output_name, payload)

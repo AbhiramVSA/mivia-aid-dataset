@@ -83,6 +83,8 @@ class Stage2TrainConfig:
     temporal_aux_loss_weight: float = 0.2
     temporal_distance_bin_edges_s: tuple[float, float, float] = (-5.0, 0.0, 5.0)
     hard_negative_multiplier: float = 2.0
+    video_balanced_sampling: bool = True
+    freeze_encoder: bool = False
 
 
 @dataclass(slots=True)
