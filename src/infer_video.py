@@ -227,7 +227,9 @@ def infer_single_video(video_path: Path, checkpoint_path: Path | None = None) ->
         if bundle.mode == "cached_stage2":
             assert bundle.encoder is not None
             assert bundle.temporal_model is not None
-            features = bundle.encoder(clip_tensor).unsqueeze(0)
+            num_steps = clip_tensor.shape[1]
+            flattened_clips = clip_tensor.reshape(num_steps, *clip_tensor.shape[2:])
+            features = bundle.encoder(flattened_clips).unsqueeze(0)
             step_logits, video_logits, _ = bundle.temporal_model(features, motion_features=motion_features)
         else:
             assert bundle.raw_model is not None
