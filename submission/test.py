@@ -7,6 +7,9 @@ from pathlib import Path
 from src.infer_video import infer_single_video
 
 
+VIDEO_SUFFIXES = {".mp4", ".avi", ".mov", ".mkv", ".mpeg", ".mpg"}
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="AID2026 submission entrypoint")
     parser.add_argument("--videos", type=Path, required=True, help="Directory containing test videos")
@@ -16,9 +19,13 @@ def parse_args() -> argparse.Namespace:
 
 def main() -> None:
     args = parse_args()
+    if not args.videos.exists():
+        raise FileNotFoundError(f"Video directory not found: {args.videos}")
+    if not args.videos.is_dir():
+        raise NotADirectoryError(f"--videos must point to a directory: {args.videos}")
     args.results.mkdir(parents=True, exist_ok=True)
     csv_path = args.results / "results.csv"
-    video_paths = sorted(path for path in args.videos.iterdir() if path.suffix.lower() == ".mp4")
+    video_paths = sorted(path for path in args.videos.iterdir() if path.suffix.lower() in VIDEO_SUFFIXES)
 
     with csv_path.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)

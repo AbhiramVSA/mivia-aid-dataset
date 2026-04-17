@@ -472,6 +472,7 @@ def main() -> None:
                 metrics=metrics,
                 extra={
                     "stage": "stage2_cached",
+                    "encoder_checkpoint": f"artifacts/checkpoints/{args.cache_root.name}.pt",
                     "lambda_video": args.lambda_video,
                     "tau_empty": metrics["tau_empty"],
                     "tau_start": metrics["tau_start"],

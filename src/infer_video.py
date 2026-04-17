@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
+import warnings
 
 import torch
 
@@ -22,8 +23,8 @@ from src.utils.checkpoint import load_checkpoint
 from src.utils.postprocess import predict_start_time
 
 
-DEFAULT_CHECKPOINT_PATH = Path("submission/weights/model.pt")
-DEFAULT_ENCODER_CHECKPOINT_PATH = Path("artifacts/checkpoints/stage1_best.pt")
+DEFAULT_CHECKPOINT_PATH = Path("submission/weights/cached_conv_rgb_r90_s2026.pt")
+DEFAULT_ENCODER_CHECKPOINT_PATH = Path("submission/weights/stage1_best.pt")
 
 
 @dataclass(frozen=True)
@@ -121,12 +122,26 @@ def _load_bundle(checkpoint_path: str) -> InferenceBundle:
     is_cached_stage2 = str(extra.get("stage", "")) == "stage2_cached" or not has_encoder_weights
     if is_cached_stage2:
         encoder = VideoMAEClipEncoder(backbone_name=backbone_name)
-        encoder_checkpoint = Path(str(extra.get("encoder_checkpoint", DEFAULT_ENCODER_CHECKPOINT_PATH)))
+        encoder_checkpoint_value = extra.get("encoder_checkpoint")
+        if encoder_checkpoint_value is None:
+            warnings.warn(
+                "Cached Stage 2 checkpoint is missing encoder_checkpoint metadata; "
+                f"falling back to {DEFAULT_ENCODER_CHECKPOINT_PATH}. "
+                "Re-export the checkpoint with current training code for explicit provenance.",
+                stacklevel=2,
+            )
+            encoder_checkpoint = DEFAULT_ENCODER_CHECKPOINT_PATH
+        else:
+            encoder_checkpoint = Path(str(encoder_checkpoint_value))
         if not encoder_checkpoint.is_absolute():
             encoder_checkpoint = (config.paths.project_root / encoder_checkpoint).resolve()
-        if encoder_checkpoint.exists():
-            encoder_payload = load_checkpoint(encoder_checkpoint, map_location="cpu")
-            encoder.load_state_dict(encoder_payload["model_state_dict"], strict=False)
+        if not encoder_checkpoint.exists():
+            raise FileNotFoundError(
+                "Cached Stage 2 inference requires the paired Stage 1 encoder checkpoint, "
+                f"but it was not found at {encoder_checkpoint}."
+            )
+        encoder_payload = load_checkpoint(encoder_checkpoint, map_location="cpu")
+        encoder.load_state_dict(encoder_payload["model_state_dict"], strict=False)
         encoder.to(device)
         encoder.eval()
 
