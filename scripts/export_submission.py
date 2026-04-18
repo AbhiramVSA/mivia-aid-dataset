@@ -11,6 +11,7 @@ DEFAULT_OUTPUT_DIR = PROJECT_ROOT / "dist" / "aid2026_submission"
 DEFAULT_ARCHIVE_PATH = PROJECT_ROOT / "dist" / "aid2026_submission.zip"
 DEFAULT_STAGE1 = PROJECT_ROOT / "submission" / "weights" / "stage1_best.pt"
 DEFAULT_STAGE2 = PROJECT_ROOT / "submission" / "weights" / "cached_conv_rgb_r90_s2026.pt"
+DEFAULT_PROCESSOR_DIR = PROJECT_ROOT / "submission" / "processor" / "videomae-base"
 
 PACKAGE_FILES = (
     "requirements.txt",
@@ -26,6 +27,7 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Package the AID2026 Colab submission archive.")
     parser.add_argument("--stage1-checkpoint", type=Path, default=DEFAULT_STAGE1)
     parser.add_argument("--stage2-checkpoint", type=Path, default=DEFAULT_STAGE2)
+    parser.add_argument("--processor-dir", type=Path, default=DEFAULT_PROCESSOR_DIR)
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
     parser.add_argument("--archive-path", type=Path, default=DEFAULT_ARCHIVE_PATH)
     return parser.parse_args()
@@ -75,10 +77,12 @@ def main() -> None:
     args = parse_args()
 
     missing = [path for path in (args.stage1_checkpoint, args.stage2_checkpoint) if not path.exists()]
+    if not args.processor_dir.exists():
+        missing.append(args.processor_dir)
     if missing:
         formatted = "\n".join(f"- {path}" for path in missing)
         raise FileNotFoundError(
-            "Submission export requires the selected checkpoints to exist before packaging:\n"
+            "Submission export requires the selected checkpoints and bundled processor to exist before packaging:\n"
             f"{formatted}"
         )
 
@@ -102,6 +106,7 @@ def main() -> None:
         args.stage2_checkpoint.resolve(),
         output_dir / "submission" / "weights" / "cached_conv_rgb_r90_s2026.pt",
     )
+    _copy_tree(args.processor_dir.resolve(), output_dir / "submission" / "processor" / "videomae-base")
     _write_submission_readme(
         output_dir / "README_submission.txt",
         stage1_name=args.stage1_checkpoint.name,

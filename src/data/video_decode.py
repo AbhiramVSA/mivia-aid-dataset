@@ -8,7 +8,7 @@ from typing import Sequence
 import torch
 import torch.nn.functional as F
 
-from src.config import VideoSamplingConfig
+from src.config import PathsConfig, VideoSamplingConfig
 
 
 @dataclass(slots=True)
@@ -32,6 +32,13 @@ def _get_videomae_processor(backbone_name: str):
         from transformers import AutoImageProcessor  # type: ignore
     except ImportError as exc:
         raise ImportError("transformers is required for VideoMAE preprocessing.") from exc
+    project_root = PathsConfig().resolve().project_root
+    local_processor_dir = project_root / "submission" / "processor" / "videomae-base"
+    if local_processor_dir.exists():
+        return AutoImageProcessor.from_pretrained(local_processor_dir)
+    backbone_path = Path(backbone_name)
+    if backbone_path.exists():
+        return AutoImageProcessor.from_pretrained(backbone_path)
     return AutoImageProcessor.from_pretrained(backbone_name)
 
 
