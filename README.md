@@ -2,7 +2,7 @@
 
 This repository contains the training and submission scaffold for AID2026. The companion [MIVIA-AID presentation](https://github.com/AbhiramVSA/mivia-aid) describes the research approach.
 
-This repository now contains the agreed architecture scaffold for the AID2026 contest submission:
+The scaffold includes:
 
 - `VideoMAE-base` clip encoder
 - causal dense clip sampling at `8 FPS`
