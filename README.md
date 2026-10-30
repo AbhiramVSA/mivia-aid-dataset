@@ -1,6 +1,10 @@
-# AID2026 research scaffold
+<p align="center">
+  <img src="assets/aid2026-mark.png" alt="Video research dataset with temporal target mark" width="200" />
+</p>
 
-This repository contains the training and submission scaffold for AID2026. The companion [MIVIA-AID presentation](https://github.com/AbhiramVSA/mivia-aid) describes the research approach.
+<h1 align="center">AID2026 research scaffold</h1>
+
+<p align="center">This repository contains the training and submission scaffold for AID2026. The companion <a href="https://github.com/AbhiramVSA/mivia-aid">MIVIA-AID presentation</a> describes the research approach.</p>
 
 The scaffold includes:
 
