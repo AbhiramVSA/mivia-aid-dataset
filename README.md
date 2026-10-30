@@ -1,4 +1,6 @@
-## AID2026 Scaffold
+# AID2026 research scaffold
+
+This repository contains the training and submission scaffold for AID2026. The companion [MIVIA-AID presentation](https://github.com/AbhiramVSA/mivia-aid) describes the research approach.
 
 This repository now contains the agreed architecture scaffold for the AID2026 contest submission:
 
@@ -90,7 +92,7 @@ uv python install 3.11
 uv sync --frozen
 ```
 
-The project is pinned to Python `3.11` via [.python-version](C:/Users/abhir/iitm-research/mivia-aid-dataset/.python-version) and `requires-python` in [pyproject.toml](C:/Users/abhir/iitm-research/mivia-aid-dataset/pyproject.toml).
+The project uses Python `3.11`, as set in [.python-version](.python-version) and `requires-python` in [pyproject.toml](pyproject.toml).
 
 PyTorch is configured through `uv` package indexes so Linux resolves GPU wheels from the CUDA 12.8 PyTorch index, while non-Linux systems fall back to CPU wheels. This follows the official `uv` PyTorch integration guidance.
 
@@ -98,7 +100,7 @@ The repository is intended to track:
 
 - source code
 - `uv.lock`
-- small annotation files such as [Train_GT.csv](C:/Users/abhir/iitm-research/mivia-aid-dataset/Train_GT.csv) and [Val_GT.csv](C:/Users/abhir/iitm-research/mivia-aid-dataset/MIVIA-AID-Dataset/Val_GT.csv)
+- small annotation files such as [Train_GT.csv](Train_GT.csv) and [Val_GT.csv](MIVIA-AID-Dataset/Val_GT.csv)
 
 It does **not** track the video datasets themselves. After cloning on the A100 machine, place:
 
